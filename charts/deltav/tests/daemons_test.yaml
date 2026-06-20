@@ -1,0 +1,106 @@
+suite: daemons render from the generic template
+templates:
+  - templates/daemons.yaml
+release:
+  name: deltav
+  namespace: default
+tests:
+  - it: renders a Deployment for each of the twelve daemons
+    asserts:
+      - documentSelector: { path: "spec.template.spec.containers[0].name", value: alarmd }
+        isKind: { of: Deployment }
+      - documentSelector: { path: "spec.template.spec.containers[0].name", value: pollerd }
+        isKind: { of: Deployment }
+      - documentSelector: { path: "spec.template.spec.containers[0].name", value: collectd }
+        isKind: { of: Deployment }
+      - documentSelector: { path: "spec.template.spec.containers[0].name", value: discovery }
+        isKind: { of: Deployment }
+      - documentSelector: { path: "spec.template.spec.containers[0].name", value: provisiond }
+        isKind: { of: Deployment }
+      - documentSelector: { path: "spec.template.spec.containers[0].name", value: trapd }
+        isKind: { of: Deployment }
+      - documentSelector: { path: "spec.template.spec.containers[0].name", value: syslogd }
+        isKind: { of: Deployment }
+      - documentSelector: { path: "spec.template.spec.containers[0].name", value: eventtranslator }
+        isKind: { of: Deployment }
+      - documentSelector: { path: "spec.template.spec.containers[0].name", value: enlinkd }
+        isKind: { of: Deployment }
+      - documentSelector: { path: "spec.template.spec.containers[0].name", value: bsmd }
+        isKind: { of: Deployment }
+      - documentSelector: { path: "spec.template.spec.containers[0].name", value: perspectivepollerd }
+        isKind: { of: Deployment }
+      - documentSelector: { path: "spec.template.spec.containers[0].name", value: telemetryd }
+        isKind: { of: Deployment }
+
+  - it: default values render exactly the expected document count (writer/forwarder off)
+    asserts:
+      # 14 enabled daemons x (Deployment+Service) + provisiond PVC = 29.
+      - hasDocuments: { count: 29 }
+
+  - it: enabling prometheus-writer adds its workloads
+    set:
+      daemons:
+        prometheus-writer: { enabled: true }
+    asserts:
+      - hasDocuments: { count: 31 }
+
+  - it: toggling enlinkd off removes its workloads
+    set:
+      daemons:
+        enlinkd: { enabled: false }
+    asserts:
+      - hasDocuments: { count: 27 }
+
+  - it: pollerd carries its TSID, resolved Kafka bootstrap, JDBC URL and a secretKeyRef
+    documentSelector:
+      path: spec.template.spec.containers[0].name
+      value: pollerd
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].env[?(@.name=="OPENNMS_TSID_NODE_ID")].value
+          value: "4"
+      - equal:
+          path: spec.template.spec.containers[0].env[?(@.name=="OPENNMS_RPC_KAFKA_BOOTSTRAP_SERVERS")].value
+          value: "kafka:9092"
+      - equal:
+          path: spec.template.spec.containers[0].env[?(@.name=="SPRING_DATASOURCE_URL")].value
+          value: "jdbc:postgresql://postgres:5432/opennms"
+      - equal:
+          path: spec.template.spec.containers[0].env[?(@.name=="SPRING_DATASOURCE_PASSWORD")].valueFrom.secretKeyRef.name
+          value: deltav-db
+      - matchRegex:
+          path: spec.template.spec.containers[0].env[?(@.name=="JAVA_OPTS")].value
+          pattern: "twin.kafka.bootstrap.servers=kafka:9092"
+
+  - it: daemons probe /actuator/health on the http port
+    documentSelector:
+      path: spec.template.spec.containers[0].name
+      value: alarmd
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].readinessProbe.httpGet.path
+          value: /actuator/health
+      - equal:
+          path: spec.template.spec.containers[0].livenessProbe.httpGet.port
+          value: http
+
+  - it: provisiond gets an imports PVC
+    documentSelector:
+      path: kind
+      value: PersistentVolumeClaim
+    asserts:
+      - equal:
+          path: metadata.name
+          value: deltav-provisiond-imports
+
+  - it: provisiond has a seed initContainer and reverse-DNS hostAliases
+    documentSelector:
+      path: spec.template.spec.containers[0].name
+      value: provisiond
+    asserts:
+      - equal:
+          path: spec.template.spec.initContainers[0].name
+          value: imports-seed
+      - equal:
+          path: spec.template.spec.hostAliases[0].ip
+          value: "172.20.20.2"

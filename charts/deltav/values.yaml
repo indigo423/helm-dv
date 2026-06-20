@@ -1,0 +1,294 @@
+# Delta-V — production-shaped defaults.
+#
+# Backing services (PostgreSQL, Kafka, ClickHouse, VictoriaMetrics, Grafana) are
+# DISABLED here: point the global.* endpoints at operator-managed / managed-cloud
+# instances. For a self-contained in-cluster demo that bundles them, install with
+# `-f values-demo.yaml` (see that file and the chart README).
+
+nameOverride: ""
+fullnameOverride: ""
+
+global:
+  image:
+    # Published images: ghcr.io/pbrane. Local builds use `deltav`.
+    registry: ghcr.io/pbrane
+    tag: ""            # defaults to Chart.appVersion when blank
+    pullPolicy: IfNotPresent
+  imagePullSecrets: []
+  instanceId: DeltaV
+  kafka:
+    # Bootstrap servers for all daemons. Blank-safe default matches the compose
+    # hostname so the bundled Kafka subchart (fullnameOverride: kafka) just works.
+    bootstrapServers: "kafka:9092"
+  postgres:
+    host: "postgres"
+    port: 5432
+    database: opennms
+    username: opennms
+    # Used only when existingSecret is empty (chart-managed Secret).
+    password: opennms
+    passwordKey: password
+    # Prefer this in production: name of a pre-created Secret holding the password.
+    existingSecret: ""
+
+# Per-daemon Prometheus scraping via ServiceMonitor (requires Prometheus/VM
+# Operator CRDs). Replaces the compose vmagent scrape sidecar.
+metrics:
+  serviceMonitor:
+    enabled: false
+    interval: 15s
+    labels: {}
+
+# ---------------------------------------------------------------------------
+# Daemons. Each entry renders Deployment + Service (+ optional ServiceMonitor /
+# imports PVC) from templates/_daemon.tpl. JAVA_OPTS and every extraEnv value
+# are run through `tpl`, so {{ ... }} references resolve at render time.
+# `usesDatabase`/`usesKafka` default true; set false to omit those env blocks.
+# ---------------------------------------------------------------------------
+daemons:
+
+  alarmd:
+    enabled: true
+    tsidNodeId: 23
+    javaOpts: "-Xms512m -Xmx1g -XX:MaxMetaspaceSize=256m"
+    consumerGroup: opennms-alarmd
+
+  pollerd:
+    enabled: true
+    tsidNodeId: 4
+    javaOpts: "-Xms512m -Xmx1g -XX:MaxMetaspaceSize=256m -Dorg.opennms.core.ipc.twin.kafka.bootstrap.servers={{ include \"deltav.kafkaBootstrap\" . }} -Dorg.opennms.core.ipc.rpc.force-remote=true"
+    consumerGroup: opennms-pollerd
+    extraEnv:
+      OPENNMS_RPC_KAFKA_ENABLED: "true"
+      OPENNMS_RPC_KAFKA_BOOTSTRAP_SERVERS: '{{ include "deltav.kafkaBootstrap" . }}'
+      DELTAV_TIMESERIES_ENABLED: "true"
+
+  collectd:
+    enabled: true
+    # collectd takes its TSID node-id via -D (compose parity), not the env var.
+    javaOpts: "-Xms512m -Xmx1g -Dorg.opennms.tsid.node-id=5"
+    stopGracePeriodSeconds: 60
+    extraEnv:
+      OPENNMS_TIMESERIES_STRATEGY: inmemory
+      DELTAV_TIMESERIES_ENABLED: "true"
+
+  discovery:
+    enabled: true
+    tsidNodeId: 24
+    javaOpts: "-Xms256m -Xmx512m -XX:MaxMetaspaceSize=256m"
+    stopGracePeriodSeconds: 60
+    extraEnv:
+      INTERFACE_NODE_CACHE_REFRESH_MS: "15000"
+      RPC_KAFKA_BOOTSTRAP_SERVERS: '{{ include "deltav.kafkaBootstrap" . }}'
+      RPC_KAFKA_FORCE_REMOTE: "true"
+
+  trapd:
+    enabled: true
+    tsidNodeId: 20
+    javaOpts: "-Xms256m -Xmx512m -XX:MaxMetaspaceSize=256m"
+    consumerGroup: opennms-trapd
+    sinkConsumerGroup: opennms-trapd-sink
+    extraEnv:
+      INTERFACE_NODE_CACHE_REFRESH_MS: "15000"
+
+  syslogd:
+    enabled: true
+    tsidNodeId: 21
+    javaOpts: "-Xms256m -Xmx512m -XX:MaxMetaspaceSize=256m"
+    consumerGroup: opennms-syslogd
+    sinkConsumerGroup: opennms-syslogd-sink
+    extraEnv:
+      INTERFACE_NODE_CACHE_REFRESH_MS: "15000"
+
+  eventtranslator:
+    enabled: true
+    tsidNodeId: 22
+    javaOpts: "-Xms256m -Xmx512m -XX:MaxMetaspaceSize=256m"
+    consumerGroup: opennms-eventtranslator
+
+  enlinkd:
+    enabled: true
+    javaOpts: "-Xms256m -Xmx512m -XX:MaxMetaspaceSize=256m -Dopennms.home=/opt/deltav"
+    consumerGroup: enlinkd
+    stopGracePeriodSeconds: 60
+    extraEnv:
+      OPENNMS_RPC_KAFKA_ENABLED: "true"
+
+  bsmd:
+    enabled: true
+    tsidNodeId: 17
+    javaOpts: "-Xms256m -Xmx512m -XX:MaxMetaspaceSize=256m -Dorg.opennms.alarms.snapshot.sync.ms=10000"
+    consumerGroup: opennms-bsmd
+
+  provisiond:
+    enabled: true
+    tsidNodeId: 25
+    javaOpts: "-Xms512m -Xmx1g -XX:MaxMetaspaceSize=256m"
+    # provisiond is the slowest to first-healthy (requisition import on top of
+    # Spring Boot init); give the readiness probe a long head start.
+    probeInitialDelay: 60
+    stopGracePeriodSeconds: 60
+    extraEnv:
+      RPC_KAFKA_ENABLED: "true"
+      RPC_KAFKA_BOOTSTRAP_SERVERS: '{{ include "deltav.kafkaBootstrap" . }}'
+      RPC_KAFKA_FORCE_REMOTE: "true"
+    # Mutable requisition state persisted on a PVC; seeded by an initContainer
+    # from the baked requisition seed (signature-compare).
+    seed:
+      enabled: true
+      image: provisiond-imports-init
+      mountPath: /opt/deltav/etc/imports
+      size: 1Gi
+    # Stub reverse-DNS for the mhuot-lab requisition addresses (compose parity).
+    hostAliases:
+      - ip: "172.20.20.2"
+        hostnames: ["mhuot-lab-2"]
+      - ip: "172.20.20.3"
+        hostnames: ["mhuot-lab-3"]
+      - ip: "172.20.20.4"
+        hostnames: ["mhuot-lab-4"]
+      - ip: "172.20.20.5"
+        hostnames: ["mhuot-lab-5"]
+      - ip: "172.20.20.6"
+        hostnames: ["mhuot-lab-6"]
+
+  perspectivepollerd:
+    enabled: true
+    tsidNodeId: 7
+    javaOpts: "-Xms512m -Xmx1g -XX:MaxMetaspaceSize=256m -Dorg.opennms.core.ipc.rpc.force-remote=true"
+    consumerGroup: opennms-perspectivepollerd
+    extraEnv:
+      OPENNMS_RPC_KAFKA_ENABLED: "true"
+      OPENNMS_RPC_KAFKA_BOOTSTRAP_SERVERS: '{{ include "deltav.kafkaBootstrap" . }}'
+      DELTAV_PERSPECTIVE_TIMESERIES_ENABLED: "true"
+
+  telemetryd:
+    enabled: true
+    tsidNodeId: 18
+    javaOpts: "-Xms256m -Xmx512m -XX:MaxMetaspaceSize=256m -Dorg.opennms.core.ipc.sink.kafka.bootstrap.servers={{ include \"deltav.kafkaBootstrap\" . }} -Dorg.opennms.core.ipc.sink.kafka.group.id=opennms-telemetryd-sink -Dorg.opennms.core.ipc.twin.kafka.bootstrap.servers={{ include \"deltav.kafkaBootstrap\" . }}"
+    consumerGroup: opennms-telemetryd
+
+  flow-enricher:
+    enabled: true
+    javaOpts: "-Xms256m -Xmx512m -XX:MaxMetaspaceSize=256m"
+    probeInitialDelay: 30
+    extraEnv:
+      DELTAV_FLOWS_SINK_TOPICS: "DeltaV.Sink.Telemetry-Netflow-5,DeltaV.Sink.Telemetry-Netflow-9,DeltaV.Sink.Telemetry-IPFIX,DeltaV.Sink.Telemetry-SFlow"
+      DELTAV_FLOWS_OUTPUT_TOPIC: deltav-flows
+      DELTAV_FLOWS_DNS_ENABLED: "true"
+      DELTAV_FLOWS_DNS_SCOPE: all
+
+  alarms-materializer:
+    enabled: true
+    # Uses SPRING_KAFKA_BOOTSTRAP_SERVERS (not KAFKA_BOOTSTRAP_SERVERS).
+    usesKafka: false
+    extraEnv:
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: '{{ include "deltav.kafkaBootstrap" . }}'
+      DELTAV_ALARMS_STATE_TOPIC: deltav-alarms-state-change
+
+  # Consumes deltav-timeseries → remote-writes to VictoriaMetrics. Only useful
+  # where a remote-write target exists; enable under the metrics/demo stack.
+  prometheus-writer:
+    enabled: false
+    usesDatabase: false
+    usesKafka: false
+    extraEnv:
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: '{{ include "deltav.kafkaBootstrap" . }}'
+      PROMETHEUS_WRITER_REMOTE_WRITE_URL: http://victoriametrics:8428/api/v1/write
+      JAVA_TOOL_OPTIONS: "-Xms128m -Xmx512m"
+    probePath: /actuator/health/readiness
+
+  # Forwards alerts to an Alertmanager. Disabled by default — set an external
+  # Alertmanager URL before enabling (Alertmanager is not bundled by this chart).
+  alerts-forwarder:
+    enabled: false
+    usesDatabase: false
+    usesKafka: false
+    probeInitialDelay: 30
+    extraEnv:
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: '{{ include "deltav.kafkaBootstrap" . }}'
+      DELTAV_ALERTS_ALERTMANAGER_URL: ""
+      DELTAV_ALERTS_ALERTMANAGER_ENABLED: "false"
+      DELTAV_ALERTS_VM_ENABLED: "true"
+
+# ---------------------------------------------------------------------------
+# Minion ingress plane. envoy + minion-gateway are the sole inbound surface for
+# Minions and are always deployed. The in-chart Minion AGENT is optional and OFF
+# here (production Minions deploy separately, per location); the demo preset
+# turns it on.
+# ---------------------------------------------------------------------------
+minionGateway:
+  enabled: true
+  image: minion-gateway
+  replicas: 1
+  javaOpts: "-Xms256m -Xmx512m"
+  resources: {}
+
+envoy:
+  enabled: true
+  image: envoy
+  replicas: 1
+  # gRPC h2c surface for Minions. Use LoadBalancer (or an Ingress with gRPC) to
+  # expose it outside the cluster.
+  service:
+    type: ClusterIP
+    port: 8443
+  resources: {}
+
+minion:
+  enabled: false
+  image: minion-boot
+  id: minion-default-01
+  location: Default
+  javaOpts: "-Xms256m -Xmx512m -Djava.security.egd=file:/dev/./urandom"
+  gateway:
+    host: ""        # blank → derived from the in-chart envoy Service
+    port: 8443
+  # UDP listeners (trap/syslog/flow). LoadBalancer is required for real ingest;
+  # the demo preset falls back to NodePort. See chart README.
+  udp:
+    service:
+      type: ClusterIP
+    ports:
+      - { name: trap, port: 1162, protocol: UDP }
+      - { name: syslog, port: 1514, protocol: UDP }
+      - { name: flow, port: 4729, protocol: UDP }
+  resources: {}
+
+# ---------------------------------------------------------------------------
+# One-shot schema init as Helm hooks (pre-install,pre-upgrade).
+# ---------------------------------------------------------------------------
+initJobs:
+  dbInit:
+    enabled: true
+    image: db-init
+    javaToolOptions: "-Xms256m -Xmx512m"
+  clickhouseInit:
+    # Gated additionally on clickhouse.enabled.
+    enabled: true
+    image: clickhouse-init
+    flowsRawTtlDays: "14"
+    flowsAggTtlDays: "90"
+
+# ---------------------------------------------------------------------------
+# Backing services as condition-gated subcharts. All OFF here (production:
+# external). values-demo.yaml flips them on with compose-matching service names.
+# ---------------------------------------------------------------------------
+postgresql:
+  enabled: false
+kafka:
+  enabled: false
+clickhouse:
+  enabled: false
+  # Set true when an EXTERNAL ClickHouse is reachable (no bundled subchart) so
+  # the clickhouse-init hook still runs against it.
+  external: false
+  # Connection details used by the clickhouse-init hook (and flow-enricher).
+  host: clickhouse
+  auth:
+    username: deltav
+    password: deltav
+victoriametrics:
+  enabled: false
+grafana:
+  enabled: false

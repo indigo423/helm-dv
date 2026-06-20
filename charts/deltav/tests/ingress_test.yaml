@@ -1,0 +1,55 @@
+suite: minion ingress plane and optional agent
+release:
+  name: deltav
+  namespace: default
+tests:
+  - it: envoy renders by default and exposes 8443
+    templates:
+      - templates/envoy.yaml
+    asserts:
+      - documentSelector: { path: kind, value: Deployment }
+        equal: { path: metadata.name, value: deltav-envoy }
+      - documentSelector: { path: kind, value: Service }
+        equal: { path: "spec.ports[0].port", value: 8443 }
+
+  - it: minion-gateway renders by default
+    templates:
+      - templates/minion-gateway.yaml
+    asserts:
+      - documentSelector: { path: kind, value: Deployment }
+        equal: { path: metadata.name, value: deltav-minion-gateway }
+
+  - it: the in-chart minion agent is absent by default
+    templates:
+      - templates/minion.yaml
+    asserts:
+      - hasDocuments: { count: 0 }
+
+  - it: enabling the minion agent adds NET_RAW and UDP listeners
+    templates:
+      - templates/minion.yaml
+    set:
+      minion:
+        enabled: true
+    asserts:
+      - documentSelector: { path: kind, value: Deployment }
+        contains:
+          path: spec.template.spec.containers[0].securityContext.capabilities.add
+          content: NET_RAW
+      - documentSelector: { path: kind, value: Service }
+        equal:
+          path: spec.ports[?(@.name=="trap")].port
+          value: 1162
+
+  - it: envoy service type is overridable for cloud LoadBalancers
+    templates:
+      - templates/envoy.yaml
+    set:
+      envoy:
+        service:
+          type: LoadBalancer
+    asserts:
+      - documentSelector: { path: kind, value: Service }
+        equal:
+          path: spec.type
+          value: LoadBalancer

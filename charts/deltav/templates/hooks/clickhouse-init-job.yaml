@@ -1,0 +1,46 @@
+{{/*
+ClickHouse DDL bootstrap — Helm hook, gated on the flow store being present
+(either the bundled clickhouse subchart or an external one declared reachable
+via clickhouse.external). Skipped entirely when neither is in play.
+*/}}
+{{- if and .Values.initJobs.clickhouseInit.enabled (or .Values.clickhouse.enabled .Values.clickhouse.external) }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "deltav.fullname" . }}-clickhouse-init
+  labels:
+    {{- include "deltav.labels" . | nindent 4 }}
+    app.kubernetes.io/component: clickhouse-init
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: {{ .Values.initJobs.clickhouseInit.backoffLimit | default 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "deltav.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: clickhouse-init
+    spec:
+      restartPolicy: Never
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: clickhouse-init
+          image: {{ include "deltav.image" (dict "root" $ "repo" .Values.initJobs.clickhouseInit.image) }}
+          imagePullPolicy: {{ .Values.global.image.pullPolicy }}
+          env:
+            - name: CLICKHOUSE_HOST
+              value: {{ .Values.clickhouse.host | default "clickhouse" | quote }}
+            - name: CLICKHOUSE_USER
+              value: {{ .Values.clickhouse.auth.username | default "deltav" | quote }}
+            - name: CLICKHOUSE_PASSWORD
+              value: {{ .Values.clickhouse.auth.password | default "deltav" | quote }}
+            - name: DELTAV_CLICKHOUSE_FLOWS_RAW_TTL_DAYS
+              value: {{ .Values.initJobs.clickhouseInit.flowsRawTtlDays | quote }}
+            - name: DELTAV_CLICKHOUSE_FLOWS_AGG_TTL_DAYS
+              value: {{ .Values.initJobs.clickhouseInit.flowsAggTtlDays | quote }}
+{{- end }}

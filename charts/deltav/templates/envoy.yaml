@@ -1,0 +1,83 @@
+{{/*
+envoy — gRPC ingress (h2c) in front of minion-gateway; the external surface
+Minions connect to on :8443. Expose via service.type=LoadBalancer (or an
+Ingress that supports gRPC/h2c) to reach Minions outside the cluster.
+*/}}
+{{- if .Values.envoy.enabled }}
+{{- $e := .Values.envoy }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "deltav.fullname" . }}-envoy
+  labels:
+    {{- include "deltav.labels" . | nindent 4 }}
+    app.kubernetes.io/component: envoy
+spec:
+  replicas: {{ $e.replicas | default 1 }}
+  selector:
+    matchLabels:
+      {{- include "deltav.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: envoy
+  template:
+    metadata:
+      labels:
+        {{- include "deltav.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: envoy
+    spec:
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: envoy
+          image: {{ include "deltav.image" (dict "root" $ "repo" ($e.image | default "envoy")) }}
+          imagePullPolicy: {{ .Values.global.image.pullPolicy }}
+          ports:
+            - name: grpc
+              containerPort: 8443
+            - name: admin
+              containerPort: 9901
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: admin
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /ready
+              port: admin
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            failureThreshold: 6
+          {{- with $e.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "deltav.fullname" . }}-envoy
+  labels:
+    {{- include "deltav.labels" . | nindent 4 }}
+    app.kubernetes.io/component: envoy
+  {{- with $e.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ $e.service.type | default "ClusterIP" }}
+  selector:
+    {{- include "deltav.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: envoy
+  ports:
+    - name: grpc
+      port: {{ $e.service.port | default 8443 }}
+      targetPort: grpc
+      protocol: TCP
+      {{- if and (eq ($e.service.type | default "ClusterIP") "NodePort") $e.service.nodePort }}
+      nodePort: {{ $e.service.nodePort }}
+      {{- end }}
+{{- end }}

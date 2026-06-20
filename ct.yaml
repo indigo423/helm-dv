@@ -1,0 +1,20 @@
+# Copyright 2026 Ronny Trommer <ronny@no42.org>
+# SPDX-License-Identifier: Apache-2.0
+#
+# chart-testing (ct) configuration. https://github.com/helm/chart-testing
+target-branch: main
+chart-dirs:
+  - charts
+# The chart pulls postgresql/kafka/clickhouse/victoria-metrics/grafana from
+# upstream repos; ct adds them so `helm dependency build` resolves during lint.
+chart-repos:
+  - bitnami=https://charts.bitnami.com/bitnami
+  - grafana=https://grafana.github.io/helm-charts
+  - vm=https://victoriametrics.github.io/helm-charts/
+helm-extra-args: --timeout 600s
+# Maintainers are a single org placeholder, not GitHub handles.
+validate-maintainers: false
+check-version-increment: true
+# Use the repo yamllint config (allows one space inside flow braces) instead of
+# chart-testing's stricter built-in.
+lint-conf: .yamllint

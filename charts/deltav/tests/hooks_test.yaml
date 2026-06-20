@@ -1,0 +1,60 @@
+suite: schema-init hooks and DB secret ordering
+release:
+  name: deltav
+  namespace: default
+tests:
+  - it: db-init is a pre-install/upgrade hook ahead of the daemons
+    templates:
+      - templates/hooks/db-init-job.yaml
+    asserts:
+      - isKind: { of: Job }
+      - equal:
+          path: metadata.annotations["helm.sh/hook"]
+          value: pre-install,pre-upgrade
+      - equal:
+          path: metadata.annotations["helm.sh/hook-weight"]
+          value: "-5"
+
+  - it: the DB secret is itself a hook, weighted before db-init, kept after
+    templates:
+      - templates/secret.yaml
+    asserts:
+      - isKind: { of: Secret }
+      - equal:
+          path: metadata.annotations["helm.sh/hook"]
+          value: pre-install,pre-upgrade
+      - equal:
+          path: metadata.annotations["helm.sh/hook-weight"]
+          value: "-10"
+      - equal:
+          path: metadata.annotations["helm.sh/hook-delete-policy"]
+          value: before-hook-creation
+
+  - it: no chart secret is rendered when an existing secret is supplied
+    templates:
+      - templates/secret.yaml
+    set:
+      global:
+        postgres:
+          existingSecret: my-db-secret
+    asserts:
+      - hasDocuments: { count: 0 }
+
+  - it: clickhouse-init is absent unless ClickHouse is present
+    templates:
+      - templates/hooks/clickhouse-init-job.yaml
+    asserts:
+      - hasDocuments: { count: 0 }
+
+  - it: clickhouse-init renders when the bundled ClickHouse is enabled
+    templates:
+      - templates/hooks/clickhouse-init-job.yaml
+    set:
+      clickhouse:
+        enabled: true
+    asserts:
+      - hasDocuments: { count: 1 }
+      - isKind: { of: Job }
+      - equal:
+          path: metadata.annotations["helm.sh/hook"]
+          value: pre-install,pre-upgrade

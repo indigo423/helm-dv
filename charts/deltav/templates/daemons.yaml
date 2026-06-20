@@ -1,0 +1,9 @@
+{{/*
+Render every enabled daemon from the single generic template. Adding a daemon
+is a values entry under `.Values.daemons`, never a new template file.
+*/}}
+{{- range $name, $cfg := .Values.daemons }}
+{{- if $cfg.enabled }}
+{{ include "deltav.daemon" (dict "root" $ "name" $name "daemon" $cfg) }}
+{{- end }}
+{{- end }}

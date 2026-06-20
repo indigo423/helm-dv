@@ -1,0 +1,97 @@
+{{/*
+minion — optional in-chart collection agent for a self-contained demo. OFF by
+default: real production Minions deploy separately, per monitoring location, as
+clients of the envoy ingress. The UDP listeners (trap/syslog/flow) need a
+Service that supports UDP — LoadBalancer for real ingest, NodePort for kind.
+*/}}
+{{- if .Values.minion.enabled }}
+{{- $m := .Values.minion }}
+{{- $gatewayHost := $m.gateway.host | default (printf "%s-envoy" (include "deltav.fullname" .)) }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "deltav.fullname" . }}-minion
+  labels:
+    {{- include "deltav.labels" . | nindent 4 }}
+    app.kubernetes.io/component: minion
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "deltav.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: minion
+  template:
+    metadata:
+      labels:
+        {{- include "deltav.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: minion
+    spec:
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: minion
+          image: {{ include "deltav.image" (dict "root" $ "repo" ($m.image | default "minion-boot")) }}
+          imagePullPolicy: {{ .Values.global.image.pullPolicy }}
+          securityContext:
+            capabilities:
+              add: ["NET_RAW"]
+          ports:
+            - name: http
+              containerPort: 8080
+            {{- range $m.udp.ports }}
+            - name: {{ .name }}
+              containerPort: {{ .port }}
+              protocol: {{ .protocol | default "UDP" }}
+            {{- end }}
+          env:
+            - name: MINION_ID
+              value: {{ $m.id | quote }}
+            - name: MINION_LOCATION
+              value: {{ $m.location | quote }}
+            - name: MINION_GATEWAY_HOST
+              value: {{ $gatewayHost | quote }}
+            - name: MINION_GATEWAY_PORT
+              value: {{ $m.gateway.port | default 8443 | quote }}
+            - name: JAVA_OPTS
+              value: {{ $m.javaOpts | quote }}
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            failureThreshold: 12
+          livenessProbe:
+            httpGet:
+              path: /actuator/health
+              port: http
+            initialDelaySeconds: 75
+            periodSeconds: 15
+            failureThreshold: 6
+          {{- with $m.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "deltav.fullname" . }}-minion
+  labels:
+    {{- include "deltav.labels" . | nindent 4 }}
+    app.kubernetes.io/component: minion
+spec:
+  type: {{ $m.udp.service.type | default "ClusterIP" }}
+  selector:
+    {{- include "deltav.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: minion
+  ports:
+    {{- range $m.udp.ports }}
+    - name: {{ .name }}
+      port: {{ .port }}
+      targetPort: {{ .name }}
+      protocol: {{ .protocol | default "UDP" }}
+    {{- end }}
+{{- end }}

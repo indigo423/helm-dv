@@ -1,0 +1,58 @@
+{{/*
+Schema migration (Liquibase) — runs once before daemons, as a Helm hook.
+Replaces the compose db-init service + its depends_on ordering: daemons that
+need the schema simply converge via their readiness probe after this completes.
+*/}}
+{{- if .Values.initJobs.dbInit.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "deltav.fullname" . }}-db-init
+  labels:
+    {{- include "deltav.labels" . | nindent 4 }}
+    app.kubernetes.io/component: db-init
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: {{ .Values.initJobs.dbInit.backoffLimit | default 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "deltav.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: db-init
+    spec:
+      restartPolicy: Never
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: db-init
+          image: {{ include "deltav.image" (dict "root" $ "repo" .Values.initJobs.dbInit.image) }}
+          imagePullPolicy: {{ .Values.global.image.pullPolicy }}
+          env:
+            - name: OPENNMS_DBINIT_ADMIN_URL
+              value: {{ printf "jdbc:postgresql://%s:%v/template1" (include "deltav.pgHost" .) (.Values.global.postgres.port | default 5432) | quote }}
+            - name: OPENNMS_DBINIT_ADMIN_USER
+              value: {{ .Values.global.postgres.username | default "opennms" | quote }}
+            - name: OPENNMS_DBINIT_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "deltav.dbSecretName" . }}
+                  key: {{ .Values.global.postgres.passwordKey | default "password" }}
+            - name: OPENNMS_DBINIT_DATABASE_NAME
+              value: {{ .Values.global.postgres.database | default "opennms" | quote }}
+            - name: OPENNMS_DBINIT_DATABASE_USER
+              value: {{ .Values.global.postgres.username | default "opennms" | quote }}
+            - name: OPENNMS_DBINIT_DATABASE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "deltav.dbSecretName" . }}
+                  key: {{ .Values.global.postgres.passwordKey | default "password" }}
+            - name: OPENNMS_DBINIT_CREATE_USER
+              value: {{ .Values.initJobs.dbInit.createUser | default "false" | quote }}
+            - name: JAVA_TOOL_OPTIONS
+              value: {{ .Values.initJobs.dbInit.javaToolOptions | quote }}
+{{- end }}

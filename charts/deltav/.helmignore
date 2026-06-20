@@ -1,0 +1,17 @@
+# Patterns to ignore when packaging the chart.
+.DS_Store
+.git/
+.gitignore
+*.tmproj
+*.bak
+*.orig
+*~
+# CI / editor noise
+.idea/
+.vscode/
+# Local rendering scratch
+rendered/
+# Test + docs sources — not shipped in the packaged chart
+tests/
+ci/
+README.md.gotmpl

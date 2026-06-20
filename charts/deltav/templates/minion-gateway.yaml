@@ -1,0 +1,82 @@
+{{/*
+minion-gateway — gRPC-to-Kafka translator; the server side of the Minion
+inbound surface. Always part of the release.
+*/}}
+{{- if .Values.minionGateway.enabled }}
+{{- $mg := .Values.minionGateway }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "deltav.fullname" . }}-minion-gateway
+  labels:
+    {{- include "deltav.labels" . | nindent 4 }}
+    app.kubernetes.io/component: minion-gateway
+spec:
+  replicas: {{ $mg.replicas | default 1 }}
+  selector:
+    matchLabels:
+      {{- include "deltav.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: minion-gateway
+  template:
+    metadata:
+      labels:
+        {{- include "deltav.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: minion-gateway
+    spec:
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: minion-gateway
+          image: {{ include "deltav.image" (dict "root" $ "repo" ($mg.image | default "minion-gateway")) }}
+          imagePullPolicy: {{ .Values.global.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+            - name: grpc
+              containerPort: 8990
+          env:
+            - name: KAFKA_BOOTSTRAP_SERVERS
+              value: {{ include "deltav.kafkaBootstrap" . | quote }}
+            - name: JAVA_OPTS
+              value: {{ $mg.javaOpts | default "-Xms256m -Xmx512m" | quote }}
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /actuator/health
+              port: http
+            initialDelaySeconds: 90
+            periodSeconds: 15
+            failureThreshold: 6
+          {{- with $mg.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "deltav.fullname" . }}-minion-gateway
+  labels:
+    {{- include "deltav.labels" . | nindent 4 }}
+    app.kubernetes.io/component: minion-gateway
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "deltav.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: minion-gateway
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+    - name: grpc
+      port: 8990
+      targetPort: grpc
+{{- end }}

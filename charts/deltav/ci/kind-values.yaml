@@ -1,0 +1,49 @@
+# CI kind-install overrides (external mode). Backing postgres/kafka are deployed
+# by ci/backing.yaml; the chart points at the public ghcr.io/pbrane images. The
+# daemon set is trimmed to a representative subset with lean JVM heaps so the
+# install fits a GitHub-hosted runner while still exercising the chart end to end:
+# the db-init/Secret hook ordering, DB- and Kafka-backed daemon boot, the
+# provisiond PVC + imports-seed initContainer, and the envoy/minion-gateway plane.
+global:
+  image:
+    registry: ghcr.io/pbrane
+    tag: "1.3.0"
+    pullPolicy: IfNotPresent
+
+metrics:
+  serviceMonitor:
+    enabled: false   # no Prometheus Operator CRDs on bare kind
+
+# Lean heaps for CI; representative daemons only.
+daemons:
+  alarmd: { enabled: true, javaOpts: "-Xms128m -Xmx256m -XX:+UseSerialGC" }
+  pollerd: { enabled: true, javaOpts: "-Xms128m -Xmx256m -XX:+UseSerialGC -Dorg.opennms.core.ipc.rpc.force-remote=true" }
+  provisiond: { enabled: true, javaOpts: "-Xms192m -Xmx384m -XX:+UseSerialGC", probeInitialDelay: 60 }
+  trapd: { enabled: true, javaOpts: "-Xms128m -Xmx256m -XX:+UseSerialGC" }
+  discovery: { enabled: true, javaOpts: "-Xms128m -Xmx256m -XX:+UseSerialGC" }
+  eventtranslator: { enabled: true, javaOpts: "-Xms128m -Xmx256m -XX:+UseSerialGC" }
+  bsmd: { enabled: true, javaOpts: "-Xms128m -Xmx256m -XX:+UseSerialGC" }
+  # Trimmed from the CI smoke (still rendered/linted by ct + unittest):
+  collectd: { enabled: false }
+  syslogd: { enabled: false }
+  enlinkd: { enabled: false }
+  perspectivepollerd: { enabled: false }
+  telemetryd: { enabled: false }
+  flow-enricher: { enabled: false }
+  alarms-materializer: { enabled: false }
+  prometheus-writer: { enabled: false }
+  alerts-forwarder: { enabled: false }
+
+minionGateway:
+  enabled: true
+  javaOpts: "-Xms128m -Xmx256m"
+envoy:
+  enabled: true
+minion:
+  enabled: false
+
+initJobs:
+  dbInit:
+    javaToolOptions: "-Xms128m -Xmx256m"
+  clickhouseInit:
+    enabled: false

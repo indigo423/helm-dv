@@ -1,0 +1,98 @@
+# Delta-V — self-contained demo preset (mirrors compose PROFILE=demo).
+#
+#   helm dependency build charts/deltav   # vendor subcharts (needs network)
+#   helm install deltav charts/deltav -f charts/deltav/values-demo.yaml
+#
+# Bundles PostgreSQL, Kafka (KRaft), ClickHouse, VictoriaMetrics and Grafana as
+# subcharts. Each subchart's fullnameOverride is pinned to the compose hostname
+# (postgres / kafka / clickhouse) so the daemons' default endpoints resolve
+# in-cluster with no per-daemon overrides.
+#
+# NOTE: subchart Service names depend on upstream chart conventions and chart
+# versions. Verify the rendered Service names on first `helm template` and adjust
+# the *.fullnameOverride / global.* endpoints if a subchart appends a suffix.
+
+global:
+  # Local builds use the `deltav` prefix; switch to ghcr.io/pbrane for published.
+  image:
+    registry: deltav
+    pullPolicy: IfNotPresent
+  kafka:
+    bootstrapServers: "kafka:9092"
+  postgres:
+    host: postgres
+
+metrics:
+  serviceMonitor:
+    enabled: true
+
+# Observability-dependent daemons on for the demo.
+daemons:
+  prometheus-writer:
+    enabled: true
+  # alerts-forwarder stays off unless you supply an external Alertmanager URL.
+
+# Expose the Minion ingress and an in-chart demo Minion. kind/minikube have no
+# cloud LB, so use NodePort here; on a cloud cluster switch these to LoadBalancer.
+envoy:
+  service:
+    type: NodePort
+
+minion:
+  enabled: true
+  udp:
+    service:
+      type: NodePort
+
+# --- Bundled backing services ---------------------------------------------
+postgresql:
+  enabled: true
+  fullnameOverride: postgres
+  auth:
+    username: opennms
+    password: opennms
+    database: opennms
+  primary:
+    persistence:
+      enabled: true
+      size: 8Gi
+
+kafka:
+  enabled: true
+  fullnameOverride: kafka
+  # KRaft single-node; no auth for the demo (compose parity).
+  listeners:
+    client:
+      protocol: PLAINTEXT
+  controller:
+    replicaCount: 1
+  broker:
+    replicaCount: 0
+  persistence:
+    enabled: true
+    size: 8Gi
+
+clickhouse:
+  enabled: true
+  fullnameOverride: clickhouse
+  host: clickhouse
+  auth:
+    username: deltav
+    password: deltav
+  shards: 1
+  replicaCount: 1
+
+victoriametrics:
+  enabled: true
+  # victoria-metrics-single — verify the rendered server Service name and align
+  # daemons.prometheus-writer.extraEnv.PROMETHEUS_WRITER_REMOTE_WRITE_URL if needed.
+  server:
+    fullnameOverride: victoriametrics
+    retentionPeriod: 1
+
+grafana:
+  enabled: true
+  fullnameOverride: grafana
+  service:
+    type: NodePort
+  adminPassword: admin
