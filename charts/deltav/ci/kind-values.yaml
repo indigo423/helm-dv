@@ -14,18 +14,21 @@ metrics:
   serviceMonitor:
     enabled: false   # no Prometheus Operator CRDs on bare kind
 
-# Lean heaps for CI; representative daemons only.
+# Lean heaps + a minimal representative daemon set so the smoke install fits a
+# GitHub runner and finishes within the wait window: alarmd (DB + health probe),
+# provisiond (Kafka + PVC + imports-seed initContainer), trapd (sink consumer
+# groups), bsmd (small). The full set is still rendered/linted by ct + unittest.
 daemons:
   alarmd: { enabled: true, javaOpts: "-Xms128m -Xmx256m -XX:+UseSerialGC" }
-  pollerd: { enabled: true, javaOpts: "-Xms128m -Xmx256m -XX:+UseSerialGC -Dorg.opennms.core.ipc.rpc.force-remote=true" }
   provisiond: { enabled: true, javaOpts: "-Xms192m -Xmx384m -XX:+UseSerialGC", probeInitialDelay: 60 }
   trapd: { enabled: true, javaOpts: "-Xms128m -Xmx256m -XX:+UseSerialGC" }
-  discovery: { enabled: true, javaOpts: "-Xms128m -Xmx256m -XX:+UseSerialGC" }
-  eventtranslator: { enabled: true, javaOpts: "-Xms128m -Xmx256m -XX:+UseSerialGC" }
   bsmd: { enabled: true, javaOpts: "-Xms128m -Xmx256m -XX:+UseSerialGC" }
   # Trimmed from the CI smoke (still rendered/linted by ct + unittest):
+  pollerd: { enabled: false }
   collectd: { enabled: false }
+  discovery: { enabled: false }
   syslogd: { enabled: false }
+  eventtranslator: { enabled: false }
   enlinkd: { enabled: false }
   perspectivepollerd: { enabled: false }
   telemetryd: { enabled: false }

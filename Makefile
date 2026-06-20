@@ -77,12 +77,23 @@ kind-test: deps ## Install onto the current kind context + smoke test
 	@echo "Context: $$(kubectl config current-context)"
 	kubectl apply -f $(CHART)/ci/backing.yaml
 	kubectl wait --for=condition=Available deploy/postgres deploy/kafka --timeout=180s
+	# No --wait: helm still blocks on the db-init pre-install hook, then returns
+	# once resources are created. Daemon readiness (slow cold image pulls +
+	# provisiond boot) is awaited explicitly below with diagnostics on failure.
 	helm upgrade --install $(CHART_NAME) $(CHART) \
-	  -f $(CHART)/ci/kind-values.yaml --wait --timeout 420s
-	@echo "=== smoke: daemon health ==="
-	kubectl wait --for=condition=Available --timeout=300s \
+	  -f $(CHART)/ci/kind-values.yaml --timeout 600s
+	@echo "=== waiting for daemons + ingress (cold image pulls can be slow) ==="
+	kubectl wait --for=condition=Available --timeout=600s \
 	  deploy/$(CHART_NAME)-alarmd deploy/$(CHART_NAME)-provisiond \
-	  deploy/$(CHART_NAME)-envoy deploy/$(CHART_NAME)-minion-gateway
+	  deploy/$(CHART_NAME)-trapd deploy/$(CHART_NAME)-bsmd \
+	  deploy/$(CHART_NAME)-envoy deploy/$(CHART_NAME)-minion-gateway \
+	  || { echo "=== DIAGNOSTICS ==="; \
+	       kubectl get pods -o wide; \
+	       kubectl get events --sort-by=.lastTimestamp | tail -40; \
+	       kubectl describe deploy/$(CHART_NAME)-provisiond | tail -25; \
+	       kubectl logs deploy/$(CHART_NAME)-alarmd --tail=50 || true; \
+	       exit 1; }
+	@echo "=== smoke: alarmd /actuator/health ==="
 	kubectl exec deploy/$(CHART_NAME)-alarmd -- \
 	  curl -sf http://localhost:8080/actuator/health | grep -q '"status":"UP"'
 	@echo "kind-test OK"
