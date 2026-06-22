@@ -29,27 +29,20 @@ maintainers:
 # values-demo.yaml (self-contained demo). `helm dependency build` requires
 # network access to populate Chart.lock; run `make helm-deps` to vendor them.
 dependencies:
-  - name: postgresql
-    version: "16.x.x"
-    repository: https://charts.bitnami.com/bitnami
-    condition: postgresql.enabled
-  - name: kafka
-    version: "31.x.x"
-    repository: https://charts.bitnami.com/bitnami
-    condition: kafka.enabled
-  - name: clickhouse
-    version: "9.x.x"
-    repository: https://charts.bitnami.com/bitnami
-    condition: clickhouse.enabled
+  # PostgreSQL / Kafka / ClickHouse are NOT subcharts: the Bitnami catalog
+  # (Aug–Sep 2025) moved versioned images behind a paywall / unmaintained
+  # `bitnamilegacy` archive. The demo datastores are now first-party manifests
+  # (templates/demo-backing.yaml, gated on demoBackingServices.enabled);
+  # production points global.* at external/operator-managed instances.
   - name: victoria-metrics-single
     # alias so the `victoriametrics:` values block (and its fullnameOverride)
     # actually routes to this subchart — Helm routes values by dependency
     # name/alias, not by the `condition:` path.
     alias: victoriametrics
-    version: "0.x.x"
+    version: "0.40.x"
     repository: https://victoriametrics.github.io/helm-charts/
     condition: victoriametrics.enabled
   - name: grafana
-    version: "8.x.x"
+    version: "8.15.x"
     repository: https://grafana.github.io/helm-charts
     condition: grafana.enabled

@@ -73,17 +73,17 @@ package: deps ## Package the chart
 	helm package $(CHART) --destination .cr-release-packages
 
 .PHONY: kind-test
-kind-test: deps ## Install onto the current kind context + smoke test
+kind-test: deps ## Install the self-contained demo onto the current kind context + smoke test
 	@echo "Context: $$(kubectl config current-context)"
-	kubectl apply -f $(CHART)/ci/backing.yaml
-	kubectl wait --for=condition=Available deploy/postgres deploy/kafka --timeout=180s
-	# No --wait: helm still blocks on the db-init pre-install hook, then returns
-	# once resources are created. Daemon readiness (slow cold image pulls +
-	# provisiond boot) is awaited explicitly below with diagnostics on failure.
+	# Install the DEMO preset (first-party postgres/kafka via demoBackingServices,
+	# delivered as pre-install hooks) overlaid with the lean CI subset. The
+	# db-init hook waits on the demo postgres; daemon readiness (slow cold image
+	# pulls + provisiond boot) is awaited explicitly below with diagnostics.
 	helm upgrade --install $(CHART_NAME) $(CHART) \
-	  -f $(CHART)/ci/kind-values.yaml --timeout 600s
-	@echo "=== waiting for daemons + ingress (cold image pulls can be slow) ==="
+	  -f $(CHART)/values-demo.yaml -f $(CHART)/ci/kind-values.yaml --timeout 600s
+	@echo "=== waiting for daemons + backing + ingress (cold image pulls can be slow) ==="
 	kubectl wait --for=condition=Available --timeout=600s \
+	  deploy/postgres deploy/kafka \
 	  deploy/$(CHART_NAME)-alarmd deploy/$(CHART_NAME)-provisiond \
 	  deploy/$(CHART_NAME)-trapd deploy/$(CHART_NAME)-bsmd \
 	  deploy/$(CHART_NAME)-envoy deploy/$(CHART_NAME)-minion-gateway \

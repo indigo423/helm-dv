@@ -1,16 +1,13 @@
 # Delta-V — self-contained demo preset (mirrors compose PROFILE=demo).
 #
-#   helm dependency build charts/deltav   # vendor subcharts (needs network)
+#   helm dependency build charts/deltav   # vendor the grafana/VM subcharts
 #   helm install deltav charts/deltav -f charts/deltav/values-demo.yaml
 #
-# Bundles PostgreSQL, Kafka (KRaft), ClickHouse, VictoriaMetrics and Grafana as
-# subcharts. Each subchart's fullnameOverride is pinned to the compose hostname
-# (postgres / kafka / clickhouse) so the daemons' default endpoints resolve
-# in-cluster with no per-daemon overrides.
-#
-# NOTE: subchart Service names depend on upstream chart conventions and chart
-# versions. Verify the rendered Service names on first `helm template` and adjust
-# the *.fullnameOverride / global.* endpoints if a subchart appends a suffix.
+# Demo datastores (PostgreSQL + Kafka) are first-party single-node manifests
+# (templates/demo-backing.yaml) — NOT Bitnami. Grafana + VictoriaMetrics remain
+# (non-Bitnami) subcharts. ClickHouse is NOT bundled, so the flow pipeline
+# (flow-enricher / clickhouse-init) is disabled here; point it at an external
+# ClickHouse for flows.
 
 global:
   # Local builds use the `deltav` prefix; switch to ghcr.io/pbrane for published.
@@ -22,15 +19,29 @@ global:
   postgres:
     host: postgres
 
+# ServiceMonitor needs the Prometheus-Operator CRDs, absent on bare kind/minikube
+# — keep OFF so `helm install -f values-demo.yaml` applies on a plain cluster.
 metrics:
   serviceMonitor:
-    enabled: true
+    enabled: false
 
-# Observability-dependent daemons on for the demo.
+# First-party demo PostgreSQL + Kafka (replaces the Bitnami subcharts).
+demoBackingServices:
+  enabled: true
+
 daemons:
   prometheus-writer:
     enabled: true
+  # No bundled ClickHouse → the flow pipeline has nowhere to write. Disable it
+  # here; for a flows demo, supply an external ClickHouse and re-enable.
+  flow-enricher:
+    enabled: false
   # alerts-forwarder stays off unless you supply an external Alertmanager URL.
+
+# ClickHouse not bundled → keep its init hook off.
+initJobs:
+  clickhouseInit:
+    enabled: false
 
 # Expose the Minion ingress and an in-chart demo Minion. kind/minikube have no
 # cloud LB, so use NodePort here; on a cloud cluster switch these to LoadBalancer.
@@ -44,48 +55,11 @@ minion:
     service:
       type: NodePort
 
-# --- Bundled backing services ---------------------------------------------
-postgresql:
-  enabled: true
-  fullnameOverride: postgres
-  auth:
-    username: opennms
-    password: opennms
-    database: opennms
-  primary:
-    persistence:
-      enabled: true
-      size: 8Gi
-
-kafka:
-  enabled: true
-  fullnameOverride: kafka
-  # KRaft single-node; no auth for the demo (compose parity).
-  listeners:
-    client:
-      protocol: PLAINTEXT
-  controller:
-    replicaCount: 1
-  broker:
-    replicaCount: 0
-  persistence:
-    enabled: true
-    size: 8Gi
-
-clickhouse:
-  enabled: true
-  fullnameOverride: clickhouse
-  host: clickhouse
-  auth:
-    username: deltav
-    password: deltav
-  shards: 1
-  replicaCount: 1
-
+# --- Bundled (non-Bitnami) subcharts ---------------------------------------
 victoriametrics:
   enabled: true
-  # victoria-metrics-single — verify the rendered server Service name and align
-  # daemons.prometheus-writer.extraEnv.PROMETHEUS_WRITER_REMOTE_WRITE_URL if needed.
+  # routed via the `victoriametrics` alias (see Chart.yaml). Service name pinned
+  # to `victoriametrics` to match prometheus-writer's remote-write URL.
   server:
     fullnameOverride: victoriametrics
     retentionPeriod: 1

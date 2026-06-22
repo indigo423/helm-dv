@@ -15,3 +15,16 @@ updates:
       actions:
         patterns:
           - "*"
+
+  # Keeps the chart's Helm dependencies (grafana, victoria-metrics-single)
+  # current. HTTPS repos → native Dependabot suffices (no OCI/Renovate needed).
+  - package-ecosystem: helm
+    directory: /charts/deltav
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: chore(deps)
+    groups:
+      chart-deps:
+        patterns:
+          - "*"

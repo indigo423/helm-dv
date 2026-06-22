@@ -16,17 +16,26 @@ surface.
 | Minion ingress (always on) | envoy (gRPC h2c :8443) → minion-gateway → Kafka |
 | Minion agent (optional) | one in-chart Minion for the demo; production Minions deploy separately |
 | Schema init (Helm hooks) | db-init, clickhouse-init (`pre-install`/`pre-upgrade`) |
-| Backing services (optional subcharts) | postgresql, kafka, clickhouse, victoria-metrics-single, grafana |
+| Demo datastores (first-party, optional) | PostgreSQL + Kafka via `templates/demo-backing.yaml` (`demoBackingServices.enabled`) |
+| Optional subcharts (non-Bitnami) | victoria-metrics-single, grafana |
 
 \* `prometheus-writer` and `alerts-forwarder` are off by default — they need a
 remote-write target / Alertmanager URL.
+
+> **No Bitnami.** Following the Aug–Sep 2025 Bitnami catalog deprecation, the
+> demo PostgreSQL/Kafka are shipped as first-party single-node manifests (not
+> subcharts). For **production**, run external/operator-managed datastores —
+> e.g. [CloudNativePG](https://cloudnative-pg.io/) (Postgres),
+> [Strimzi](https://strimzi.io/) (Kafka, KRaft), [Altinity](https://github.com/Altinity/clickhouse-operator)
+> (ClickHouse), or [KubeBlocks](https://kubeblocks.io/) — and point `global.*` at them.
+> ClickHouse is no longer bundled; supply an external one for the flow pipeline.
 
 ## Install
 
 ### Production (external/operator-managed backing services)
 
-Subcharts are **off** by default. Point the daemons at existing Kafka, PostgreSQL
-and ClickHouse. Images default to the public `ghcr.io/pbrane/*` registry.
+Demo datastores are **off** by default. Point the daemons at existing Kafka,
+PostgreSQL and ClickHouse. Images default to the public `ghcr.io/pbrane/*` registry.
 
 ```bash
 helm install deltav oci://ghcr.io/indigo423/helm-dv/deltav \
@@ -39,14 +48,19 @@ Provide the DB password via `global.postgres.existingSecret` (a Secret with a
 `password` key). Without it the chart creates one from `global.postgres.password`
 (non-production only).
 
-### Self-contained demo (bundled backing services)
+### Self-contained demo (first-party backing services)
 
-Mirrors compose `PROFILE=demo` — brings up the whole stack on kind/minikube:
+Brings up the daemon plane plus first-party PostgreSQL + Kafka on kind/minikube
+(no Bitnami, no external datastores). The flow pipeline (ClickHouse) is not
+bundled and is disabled in this preset.
 
 ```bash
 helm repo add deltav https://indigo423.github.io/helm-dv
 helm install deltav deltav/deltav -f https://raw.githubusercontent.com/indigo423/helm-dv/main/charts/deltav/values-demo.yaml
 ```
+
+The demo `postgres`/`kafka` are delivered as `pre-install` hooks (weight `-20`)
+so they come up before the `db-init` schema hook (`-5`).
 
 ## Key design points
 

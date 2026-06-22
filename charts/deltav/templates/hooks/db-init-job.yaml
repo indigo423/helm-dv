@@ -28,6 +28,18 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- if .Values.demoBackingServices.enabled }}
+      # Demo only: the first-party postgres is a pre-install hook (weight -20),
+      # created before this db-init hook (-5) — block until it accepts
+      # connections so the migration never races a not-yet-ready DB.
+      initContainers:
+        - name: wait-for-postgres
+          image: {{ .Values.demoBackingServices.waitImage | default "busybox:1.37" | quote }}
+          command:
+            - sh
+            - -c
+            - 'until nc -z {{ include "deltav.pgHost" . }} {{ .Values.global.postgres.port | default 5432 }}; do echo "waiting for postgres..."; sleep 2; done'
+      {{- end }}
       containers:
         - name: db-init
           image: {{ include "deltav.image" (dict "root" $ "repo" .Values.initJobs.dbInit.image) }}

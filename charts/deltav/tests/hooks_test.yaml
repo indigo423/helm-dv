@@ -40,6 +40,17 @@ tests:
     asserts:
       - hasDocuments: { count: 0 }
 
+  - it: db-init gains a wait-for-postgres initContainer in demo mode
+    templates:
+      - templates/hooks/db-init-job.yaml
+    set:
+      demoBackingServices:
+        enabled: true
+    asserts:
+      - equal:
+          path: spec.template.spec.initContainers[0].name
+          value: wait-for-postgres
+
   - it: clickhouse-init is absent unless ClickHouse is present
     templates:
       - templates/hooks/clickhouse-init-job.yaml

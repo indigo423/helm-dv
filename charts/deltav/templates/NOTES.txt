@@ -12,14 +12,15 @@ Minion ingress:
   minion-gateway  : {{ if .Values.minionGateway.enabled }}on{{ else }}off{{ end }}
   minion (agent)  : {{ if .Values.minion.enabled }}on (location={{ .Values.minion.location }}){{ else }}off — production Minions deploy separately{{ end }}
 
-Backing services (subcharts):
-  postgresql={{ .Values.postgresql.enabled }}  kafka={{ .Values.kafka.enabled }}  clickhouse={{ .Values.clickhouse.enabled }}  victoriametrics={{ .Values.victoriametrics.enabled }}  grafana={{ .Values.grafana.enabled }}
+Backing services:
+  demo postgres+kafka : {{ if .Values.demoBackingServices.enabled }}on (first-party, in-chart){{ else }}off — using external services{{ end }}
+  victoriametrics     : {{ .Values.victoriametrics.enabled }}  grafana={{ .Values.grafana.enabled }}
 
 Check daemon health:
   kubectl -n {{ .Release.Namespace }} get pods -l app.kubernetes.io/instance={{ .Release.Name }}
   kubectl -n {{ .Release.Namespace }} exec deploy/{{ .Release.Name }}-alarmd -- wget -qO- http://localhost:8080/actuator/health
-{{ if not .Values.kafka.enabled }}
-Reminder: subcharts are OFF. Daemons expect Kafka at "{{ include "deltav.kafkaBootstrap" . }}"
+{{ if not .Values.demoBackingServices.enabled }}
+Reminder: demo datastores are OFF. Daemons expect Kafka at "{{ include "deltav.kafkaBootstrap" . }}"
 and PostgreSQL at "{{ include "deltav.pgHost" . }}". Point global.* at your
 operator/managed instances, or install with -f values-demo.yaml for the bundled stack.
 {{- end }}

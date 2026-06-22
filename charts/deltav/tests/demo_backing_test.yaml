@@ -1,0 +1,56 @@
+suite: first-party demo backing services
+templates:
+  - templates/demo-backing.yaml
+release:
+  name: deltav
+  namespace: default
+tests:
+  - it: renders nothing by default (production uses external services)
+    asserts:
+      - hasDocuments: { count: 0 }
+
+  - it: renders postgres + kafka (Deployments + Services) when enabled
+    set:
+      demoBackingServices:
+        enabled: true
+    asserts:
+      - hasDocuments: { count: 4 }
+      - documentSelector: { path: "spec.template.spec.containers[0].name", value: postgres }
+        isKind: { of: Deployment }
+      - documentSelector: { path: "spec.template.spec.containers[0].name", value: kafka }
+        isKind: { of: Deployment }
+
+  - it: the postgres backing Deployment is a pre-install hook before db-init (-5)
+    set:
+      demoBackingServices:
+        enabled: true
+    documentSelector:
+      path: "spec.template.spec.containers[0].name"
+      value: postgres
+    asserts:
+      - equal:
+          path: metadata.annotations["helm.sh/hook"]
+          value: pre-install,pre-upgrade
+      - equal:
+          path: metadata.annotations["helm.sh/hook-weight"]
+          value: "-20"
+
+  - it: the postgres Service is named for the compose-parity hostname
+    set:
+      demoBackingServices:
+        enabled: true
+    documentSelector:
+      path: "spec.ports[0].port"
+      value: 5432
+    asserts:
+      - equal: { path: metadata.name, value: postgres }
+
+  - it: the kafka Service is named for the compose-parity hostname
+    set:
+      demoBackingServices:
+        enabled: true
+    documentSelector:
+      path: "spec.ports[0].name"
+      value: client
+    asserts:
+      - equal: { path: metadata.name, value: kafka }
