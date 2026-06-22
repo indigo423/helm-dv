@@ -42,6 +42,10 @@ dependencies:
     repository: https://charts.bitnami.com/bitnami
     condition: clickhouse.enabled
   - name: victoria-metrics-single
+    # alias so the `victoriametrics:` values block (and its fullnameOverride)
+    # actually routes to this subchart — Helm routes values by dependency
+    # name/alias, not by the `condition:` path.
+    alias: victoriametrics
     version: "0.x.x"
     repository: https://victoriametrics.github.io/helm-charts/
     condition: victoriametrics.enabled
