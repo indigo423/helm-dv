@@ -86,7 +86,7 @@ Kubernetes: `>=1.25.0-0`
 | https://charts.bitnami.com/bitnami | kafka | 31.x.x |
 | https://charts.bitnami.com/bitnami | postgresql | 16.x.x |
 | https://grafana.github.io/helm-charts | grafana | 8.x.x |
-| https://victoriametrics.github.io/helm-charts/ | victoria-metrics-single | 0.x.x |
+| https://victoriametrics.github.io/helm-charts/ | victoriametrics(victoria-metrics-single) | 0.x.x |
 
 ## Values
 
