@@ -1,0 +1,7 @@
+# Copyright 2026 Ronny Trommer <ronny@no42.org>
+# SPDX-License-Identifier: Apache-2.0
+#
+# chart-releaser config. Name the GitHub Release + tag `v<version>` (e.g.
+# v0.1.0) rather than the default `<chart>-<version>` (deltav-0.1.0). The chart
+# version itself (Chart.yaml) and the OCI tag stay plain semver `0.1.0`.
+release-name-template: "v{{ .Version }}"
