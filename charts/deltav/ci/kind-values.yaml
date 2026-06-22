@@ -1,9 +1,12 @@
-# CI kind-install overrides (external mode). Backing postgres/kafka are deployed
-# by ci/backing.yaml; the chart points at the public ghcr.io/pbrane images. The
-# daemon set is trimmed to a representative subset with lean JVM heaps so the
-# install fits a GitHub-hosted runner while still exercising the chart end to end:
-# the db-init/Secret hook ordering, DB- and Kafka-backed daemon boot, the
-# provisiond PVC + imports-seed initContainer, and the envoy/minion-gateway plane.
+# CI kind-install overlay — layered ON TOP of values-demo.yaml (which provides
+# the first-party demo postgres/kafka via demoBackingServices). This overlay
+# repoints daemon images at the public ghcr.io/pbrane registry, trims to a lean
+# daemon subset + heaps so the install fits a GitHub runner, and disables the
+# grafana/VM subcharts + minion to keep the smoke fast — still exercising the
+# demo-backing hook ordering, the db-init wait-for-postgres, DB/Kafka-backed
+# daemon boot, the provisiond PVC + imports-seed initContainer, and envoy/
+# minion-gateway. (The demo postgres:16 / apache/kafka:3.9.1 are upstream images,
+# unaffected by the registry override.)
 global:
   image:
     registry: ghcr.io/pbrane
@@ -13,6 +16,13 @@ global:
 metrics:
   serviceMonitor:
     enabled: false   # no Prometheus Operator CRDs on bare kind
+
+# Trim the grafana/VM subcharts for a fast smoke (values-demo enables them);
+# minion is disabled in the block below.
+victoriametrics:
+  enabled: false
+grafana:
+  enabled: false
 
 # Lean heaps + a minimal representative daemon set so the smoke install fits a
 # GitHub runner and finishes within the wait window: alarmd (DB + health probe),

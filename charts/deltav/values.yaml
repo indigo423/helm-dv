@@ -271,23 +271,37 @@ initJobs:
     flowsAggTtlDays: "90"
 
 # ---------------------------------------------------------------------------
-# Backing services as condition-gated subcharts. All OFF here (production:
-# external). values-demo.yaml flips them on with compose-matching service names.
+# Demo datastores (PostgreSQL + Kafka). First-party manifests (not Bitnami) —
+# templates/demo-backing.yaml. OFF here: production points global.* at external
+# services. values-demo.yaml turns this ON. Single-node, no persistence — a demo.
 # ---------------------------------------------------------------------------
-postgresql:
+demoBackingServices:
   enabled: false
-kafka:
-  enabled: false
+  postgres:
+    image: postgres:16
+    resources: {}
+  kafka:
+    image: apache/kafka:3.9.1
+    heapOpts: "-Xms256m -Xmx512m"
+    resources: {}
+  # Image used by the db-init wait-for-postgres initContainer (demo only).
+  waitImage: busybox:1.37
+
+# ClickHouse: NOT bundled (Bitnami catalog deprecated). The clickhouse-init hook
+# runs only against an EXTERNAL ClickHouse — set clickhouse.external=true and the
+# connection details. Production flows pipelines supply their own ClickHouse.
 clickhouse:
-  enabled: false
-  # Set true when an EXTERNAL ClickHouse is reachable (no bundled subchart) so
-  # the clickhouse-init hook still runs against it.
-  external: false
-  # Connection details used by the clickhouse-init hook (and flow-enricher).
+  enabled: false        # no bundled subchart anymore
+  external: false       # set true to run clickhouse-init against an external CH
   host: clickhouse
   auth:
     username: deltav
     password: deltav
+
+# ---------------------------------------------------------------------------
+# Remaining backing services as condition-gated subcharts (non-Bitnami). OFF
+# here; values-demo.yaml flips them on.
+# ---------------------------------------------------------------------------
 victoriametrics:
   enabled: false
 grafana:

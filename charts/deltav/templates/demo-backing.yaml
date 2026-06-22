@@ -1,0 +1,158 @@
+{{/*
+First-party demo datastores (postgres + kafka). Replaces the Bitnami
+postgresql/kafka subcharts for the self-contained demo. Gated on
+`demoBackingServices.enabled` — OFF in production (external services), ON in
+values-demo.yaml. Single-node, no persistence: a demo, NOT for production.
+
+ORDERING: these render as `pre-install,pre-upgrade` hooks at weight -20 — BEFORE
+the chart Secret (-10) and the db-init hook (-5) — because the db-init Helm hook
+runs before normal release resources, so the demo PostgreSQL it migrates must
+exist first. (db-init also carries a wait-for-postgres initContainer for
+connection-readiness robustness.) Consequence: on `helm upgrade` the
+before-hook-creation policy recreates these, wiping demo data — acceptable for an
+ephemeral demo. Service names are pinned to `postgres` / `kafka` so the daemons'
+default endpoints resolve with no per-daemon override.
+*/}}
+{{- if .Values.demoBackingServices.enabled }}
+{{- $pg := .Values.demoBackingServices.postgres }}
+{{- $kafka := .Values.demoBackingServices.kafka }}
+{{- $hookAnnotations := dict "helm.sh/hook" "pre-install,pre-upgrade" "helm.sh/hook-weight" "-20" "helm.sh/hook-delete-policy" "before-hook-creation" }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  labels:
+    {{- include "deltav.labels" . | nindent 4 }}
+    app.kubernetes.io/component: demo-postgres
+  annotations:
+    {{- toYaml $hookAnnotations | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "deltav.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: demo-postgres
+  template:
+    metadata:
+      labels:
+        {{- include "deltav.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: demo-postgres
+    spec:
+      containers:
+        - name: postgres
+          image: {{ $pg.image | default "postgres:16" | quote }}
+          args: ["-c", "max_connections=350"]
+          env:
+            - name: POSTGRES_DB
+              value: {{ .Values.global.postgres.database | default "opennms" | quote }}
+            - name: POSTGRES_USER
+              value: {{ .Values.global.postgres.username | default "opennms" | quote }}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "deltav.dbSecretName" . }}
+                  key: {{ .Values.global.postgres.passwordKey | default "password" }}
+            - name: POSTGRES_HOST_AUTH_METHOD
+              value: md5
+            - name: POSTGRES_INITDB_ARGS
+              value: "--auth=md5"
+          ports:
+            - containerPort: 5432
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", {{ .Values.global.postgres.username | default "opennms" | quote }}, "-d", {{ .Values.global.postgres.database | default "opennms" | quote }}]
+            periodSeconds: 5
+          {{- with $pg.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  labels:
+    {{- include "deltav.labels" . | nindent 4 }}
+    app.kubernetes.io/component: demo-postgres
+  annotations:
+    {{- toYaml $hookAnnotations | nindent 4 }}
+spec:
+  selector:
+    {{- include "deltav.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: demo-postgres
+  ports:
+    - port: 5432
+      targetPort: 5432
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kafka
+  labels:
+    {{- include "deltav.labels" . | nindent 4 }}
+    app.kubernetes.io/component: demo-kafka
+  annotations:
+    {{- toYaml $hookAnnotations | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "deltav.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: demo-kafka
+  template:
+    metadata:
+      labels:
+        {{- include "deltav.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: demo-kafka
+    spec:
+      containers:
+        - name: kafka
+          image: {{ $kafka.image | default "apache/kafka:3.9.1" | quote }}
+          env:
+            - { name: KAFKA_NODE_ID, value: "1" }
+            - { name: KAFKA_PROCESS_ROLES, value: "broker,controller" }
+            # Single combined node: the controller quorum voter must be localhost,
+            # not the Service — a ClusterIP Service has no endpoints until the pod
+            # is Ready, but the pod can't get Ready until it reaches its controller.
+            - { name: KAFKA_CONTROLLER_QUORUM_VOTERS, value: "1@localhost:9093" }
+            - { name: KAFKA_LISTENERS, value: "PLAINTEXT://:9092,CONTROLLER://:9093" }
+            - { name: KAFKA_ADVERTISED_LISTENERS, value: "PLAINTEXT://kafka:9092" }
+            - { name: KAFKA_LISTENER_SECURITY_PROTOCOL_MAP, value: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT" }
+            - { name: KAFKA_CONTROLLER_LISTENER_NAMES, value: "CONTROLLER" }
+            - { name: KAFKA_INTER_BROKER_LISTENER_NAME, value: "PLAINTEXT" }
+            - { name: KAFKA_AUTO_CREATE_TOPICS_ENABLE, value: "true" }
+            - { name: KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR, value: "1" }
+            - { name: CLUSTER_ID, value: "delta-v-kafka-cluster" }
+            - { name: KAFKA_HEAP_OPTS, value: {{ $kafka.heapOpts | default "-Xms256m -Xmx512m" | quote }} }
+          ports:
+            - containerPort: 9092
+          readinessProbe:
+            tcpSocket:
+              port: 9092
+            periodSeconds: 5
+          {{- with $kafka.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka
+  labels:
+    {{- include "deltav.labels" . | nindent 4 }}
+    app.kubernetes.io/component: demo-kafka
+  annotations:
+    {{- toYaml $hookAnnotations | nindent 4 }}
+spec:
+  selector:
+    {{- include "deltav.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: demo-kafka
+  ports:
+    - name: client
+      port: 9092
+      targetPort: 9092
+    - name: controller
+      port: 9093
+      targetPort: 9093
+{{- end }}
