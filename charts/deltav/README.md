@@ -96,8 +96,8 @@ Kubernetes: `>=1.25.0-0`
 
 | Repository | Name | Version |
 |------------|------|---------|
-| https://grafana.github.io/helm-charts | grafana | 8.15.x |
-| https://victoriametrics.github.io/helm-charts/ | victoriametrics(victoria-metrics-single) | 0.40.x |
+| https://grafana.github.io/helm-charts | grafana | 10.5.15 |
+| https://victoriametrics.github.io/helm-charts/ | victoriametrics(victoria-metrics-single) | 0.40.1 |
 
 ## Values
 
