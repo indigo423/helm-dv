@@ -14,7 +14,7 @@ spec:
     spec:
       containers:
         - name: postgres
-          image: postgres:15
+          image: postgres:16
           args: ["-c", "max_connections=350"]
           env:
             - { name: POSTGRES_DB, value: opennms }
