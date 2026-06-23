@@ -15,8 +15,9 @@ surface.
 | Daemons (generic template over `.Values.daemons`) | alarmd, pollerd, collectd, discovery, provisiond, trapd, syslogd, eventtranslator, enlinkd, bsmd, perspectivepollerd, telemetryd, flow-enricher, alarms-materializer, prometheus-writer\*, alerts-forwarder\* |
 | Minion ingress (always on) | envoy (gRPC h2c :8443) → minion-gateway → Kafka |
 | Minion agent (optional) | one in-chart Minion for the demo; production Minions deploy separately |
-| Schema init (Helm hooks) | db-init, clickhouse-init (`pre-install`/`pre-upgrade`) |
-| Demo datastores (first-party, optional) | PostgreSQL + Kafka via `templates/demo-backing.yaml` (`demoBackingServices.enabled`) |
+| Schema init (Helm hooks) | db-init (`pre-install` for external/demo-legacy; `post-install` for CNPG modes), clickhouse-init |
+| PostgreSQL backing | per `global.postgres.mode`: external · CloudNativePG `Cluster` (`managed`/`demo`) · raw Deployment (`demo-legacy`) — see [below](#postgresql-backing-modes) |
+| Demo Kafka (first-party, optional) | Kafka via `templates/demo-backing.yaml` (`demoBackingServices.enabled`) |
 | Optional subcharts (non-Bitnami) | victoria-metrics-single, grafana |
 
 \* `prometheus-writer` and `alerts-forwarder` are off by default — they need a
@@ -29,6 +30,45 @@ remote-write target / Alertmanager URL.
 > [Strimzi](https://strimzi.io/) (Kafka, KRaft), [Altinity](https://github.com/Altinity/clickhouse-operator)
 > (ClickHouse), or [KubeBlocks](https://kubeblocks.io/) — and point `global.*` at them.
 > ClickHouse is no longer bundled; supply an external one for the flow pipeline.
+
+## PostgreSQL backing modes
+
+PostgreSQL is selected per deployment via **`global.postgres.mode`**:
+
+| Mode | What it renders | Use for |
+|---|---|---|
+| `external` *(default)* | Nothing — daemons wire to `global.postgres.host` + `existingSecret`. | Production with a managed/external Postgres (RDS, Cloud SQL, operator-managed elsewhere). |
+| `managed` | A **CloudNativePG `Cluster`** — 3 instances, pod anti-affinity, dedicated WAL storage. | Production, self-contained HA Postgres in-cluster. |
+| `demo` | A single-instance CloudNativePG `Cluster` (ephemeral). | Self-contained demo. |
+| `demo-legacy` | The first-party single-node `postgres:16` Deployment (operator-free). | Lightweight demo / rollback. |
+
+`external` renders byte-identical to prior releases, so it stays the safe default.
+
+**Prerequisites for `managed`/`demo`:** the [CloudNativePG operator](https://cloudnative-pg.io/)
+must already be installed (assume-installed — the chart does not vendor it), on
+**Kubernetes ≥ 1.29**:
+
+```bash
+helm repo add cnpg https://cloudnative-pg.github.io/charts
+helm upgrade --install cnpg cnpg/cloudnative-pg \
+  --namespace cnpg-system --create-namespace --version 0.28.3 --wait
+```
+
+In `managed` mode you **must** set a non-default `global.postgres.password` (or a
+`global.postgres.existingSecret` — a `kubernetes.io/basic-auth` Secret whose
+`username` equals `global.postgres.username`); the chart refuses the insecure
+default. `global.postgres.passwordKey` must be `password` in `managed`/`demo`
+(CloudNativePG fixes the secret key names).
+
+> **Upgrade note (`managed`/`demo`):** schema migration (`db-init`) runs **once at
+> install** (a `post-install` hook), and is **not** re-run on `helm upgrade` — the
+> bundled `db-init` image (1.3.0) cannot re-run against an existing schema (an
+> upstream `Migrator.databaseSetOwner` bug). For an app-version bump that needs new
+> Liquibase changesets, run the migration manually until the upstream fix lands.
+
+> **Not yet covered:** PostgreSQL 18 (the chart targets PG 16; PG 18 needs the
+> OpenNMS installer `-Q` version-gate and PL/pgSQL IPLIKE) and CloudNativePG
+> backups / PITR (Barman Cloud Plugin + cert-manager) are planned follow-ups.
 
 ## Install
 
@@ -48,19 +88,23 @@ Provide the DB password via `global.postgres.existingSecret` (a Secret with a
 `password` key). Without it the chart creates one from `global.postgres.password`
 (non-production only).
 
-### Self-contained demo (first-party backing services)
+### Self-contained demo (CloudNativePG Postgres + first-party Kafka)
 
-Brings up the daemon plane plus first-party PostgreSQL + Kafka on kind/minikube
-(no Bitnami, no external datastores). The flow pipeline (ClickHouse) is not
-bundled and is disabled in this preset.
+Brings up the daemon plane plus a CloudNativePG-managed single-node PostgreSQL
+(`mode: demo`) and a first-party Kafka on kind/minikube. **Requires the
+CloudNativePG operator** (see Prerequisites above). The flow pipeline (ClickHouse)
+is not bundled and is disabled in this preset.
 
 ```bash
+# install the CloudNativePG operator first (see "PostgreSQL backing modes"), then:
 helm repo add deltav https://indigo423.github.io/helm-dv
 helm install deltav deltav/deltav -f https://raw.githubusercontent.com/indigo423/helm-dv/main/charts/deltav/values-demo.yaml
 ```
 
-The demo `postgres`/`kafka` are delivered as `pre-install` hooks (weight `-20`)
-so they come up before the `db-init` schema hook (`-5`).
+The demo Kafka is a `pre-install` hook (weight `-20`); the CloudNativePG `Cluster`
+is a normal resource and `db-init` runs as a `post-install` hook once it is Ready.
+For an **operator-free** demo, set `global.postgres.mode: demo-legacy` (the raw
+single-node `postgres:16` Deployment).
 
 ## Key design points
 

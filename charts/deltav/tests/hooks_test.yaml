@@ -51,6 +51,30 @@ tests:
           path: spec.template.spec.initContainers[0].name
           value: wait-for-postgres
 
+  - it: managed mode runs db-init as a post-install hook against the owned DB with a pg_isready wait
+    templates:
+      - templates/hooks/db-init-job.yaml
+    set:
+      global: { postgres: { mode: managed, password: testsecret } }
+    asserts:
+      - equal:
+          path: metadata.annotations["helm.sh/hook"]
+          value: post-install
+      - notExists:
+          path: metadata.annotations["helm.sh/hook-weight"]
+      - equal:
+          path: spec.template.spec.containers[0].env[0].name
+          value: OPENNMS_DBINIT_ADMIN_URL
+      - matchRegex:
+          path: spec.template.spec.containers[0].env[0].value
+          pattern: -pg-rw:5432/opennms$
+      - equal:
+          path: spec.template.spec.initContainers[0].name
+          value: wait-for-postgres
+      - matchRegex:
+          path: spec.template.spec.initContainers[0].command[2]
+          pattern: pg_isready
+
   - it: clickhouse-init is absent unless ClickHouse is present
     templates:
       - templates/hooks/clickhouse-init-job.yaml

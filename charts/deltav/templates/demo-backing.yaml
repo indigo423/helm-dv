@@ -17,6 +17,8 @@ default endpoints resolve with no per-daemon override.
 {{- $pg := .Values.demoBackingServices.postgres }}
 {{- $kafka := .Values.demoBackingServices.kafka }}
 {{- $hookAnnotations := dict "helm.sh/hook" "pre-install,pre-upgrade" "helm.sh/hook-weight" "-20" "helm.sh/hook-delete-policy" "before-hook-creation" }}
+{{- $mode := include "deltav.postgres.mode" . }}
+{{- if not (or (eq $mode "managed") (eq $mode "demo")) }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -84,6 +86,7 @@ spec:
     - port: 5432
       targetPort: 5432
 ---
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
