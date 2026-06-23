@@ -22,6 +22,11 @@
 CHART        ?= charts/deltav
 CHART_NAME   ?= deltav
 
+# CloudNativePG operator (assume-installed prerequisite for managed/demo modes).
+CNPG_CHART_VERSION ?= 0.28.3
+# Extra kubeconform schema source for CRDs (CNPG Cluster, etc.) not in the core set.
+CRD_SCHEMA_LOCATION ?= https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json
+
 .DEFAULT_GOAL := help
 
 .PHONY: help
@@ -51,13 +56,15 @@ template: ## Render both presets to stdout
 	helm template $(CHART_NAME) $(CHART) -f $(CHART)/values-demo.yaml
 
 .PHONY: kubeconform
-kubeconform: ## Schema-validate rendered manifests
+kubeconform: ## Schema-validate rendered manifests (incl. CNPG Cluster CRD)
 	helm template $(CHART_NAME) $(CHART) | \
 	  kubeconform -strict -summary -ignore-missing-schemas \
-	    -schema-location default
+	    -schema-location default \
+	    -schema-location '$(CRD_SCHEMA_LOCATION)'
 	helm template $(CHART_NAME) $(CHART) -f $(CHART)/values-demo.yaml | \
 	  kubeconform -strict -summary -ignore-missing-schemas \
-	    -schema-location default
+	    -schema-location default \
+	    -schema-location '$(CRD_SCHEMA_LOCATION)'
 
 .PHONY: docs
 docs: ## Regenerate chart READMEs from README.md.gotmpl
@@ -75,20 +82,35 @@ package: deps ## Package the chart
 .PHONY: kind-test
 kind-test: deps ## Install the self-contained demo onto the current kind context + smoke test
 	@echo "Context: $$(kubectl config current-context)"
-	# Install the DEMO preset (first-party postgres/kafka via demoBackingServices,
-	# delivered as pre-install hooks) overlaid with the lean CI subset. The
-	# db-init hook waits on the demo postgres; daemon readiness (slow cold image
-	# pulls + provisiond boot) is awaited explicitly below with diagnostics.
+	# The demo preset uses mode: demo → a CloudNativePG-managed PostgreSQL Cluster
+	# (operator is an assume-installed prerequisite). Install the pinned operator
+	# first, then the chart. Kafka is still the first-party demo Deployment.
+	@echo "=== installing CloudNativePG operator $(CNPG_CHART_VERSION) ==="
+	helm repo add cnpg https://cloudnative-pg.github.io/charts >/dev/null 2>&1 || true
+	helm repo update cnpg >/dev/null
+	helm upgrade --install cnpg cnpg/cloudnative-pg \
+	  --namespace cnpg-system --create-namespace \
+	  --version $(CNPG_CHART_VERSION) --wait --timeout 300s
+	kubectl rollout status deployment/cnpg-cloudnative-pg -n cnpg-system --timeout=300s
+	# Install the DEMO preset overlaid with the lean CI subset. db-init is a
+	# post-install hook (the Cluster is a normal resource); daemon readiness (slow
+	# cold image pulls + provisiond boot) is awaited explicitly below.
 	helm upgrade --install $(CHART_NAME) $(CHART) \
 	  -f $(CHART)/values-demo.yaml -f $(CHART)/ci/kind-values.yaml --timeout 600s
+	@echo "=== waiting for the CNPG postgres Cluster to be Ready ==="
+	kubectl wait --for=condition=Ready --timeout=300s cluster/$(CHART_NAME)-pg \
+	  || { echo "=== CNPG CLUSTER DIAGNOSTICS ==="; \
+	       kubectl get cluster,pods -o wide; \
+	       kubectl describe cluster/$(CHART_NAME)-pg | tail -30; \
+	       exit 1; }
 	@echo "=== waiting for daemons + backing + ingress (cold image pulls can be slow) ==="
 	kubectl wait --for=condition=Available --timeout=600s \
-	  deploy/postgres deploy/kafka \
+	  deploy/kafka \
 	  deploy/$(CHART_NAME)-alarmd deploy/$(CHART_NAME)-provisiond \
 	  deploy/$(CHART_NAME)-trapd deploy/$(CHART_NAME)-bsmd \
 	  deploy/$(CHART_NAME)-envoy deploy/$(CHART_NAME)-minion-gateway \
 	  || { echo "=== DIAGNOSTICS ==="; \
-	       kubectl get pods -o wide; \
+	       kubectl get cluster,pods -o wide; \
 	       kubectl get events --sort-by=.lastTimestamp | tail -40; \
 	       kubectl describe deploy/$(CHART_NAME)-provisiond | tail -25; \
 	       kubectl logs deploy/$(CHART_NAME)-alarmd --tail=50 || true; \

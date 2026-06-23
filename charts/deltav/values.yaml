@@ -21,6 +21,13 @@ global:
     # hostname so the bundled Kafka subchart (fullnameOverride: kafka) just works.
     bootstrapServers: "kafka:9092"
   postgres:
+    # Backing-service mode: external | managed | demo | demo-legacy.
+    #   external    - chart provisions nothing; daemons wire to host + secret below (default).
+    #   managed     - CloudNativePG-provisioned HA Cluster (CNPG operator must be installed).
+    #   demo        - CloudNativePG-provisioned single-instance Cluster (ephemeral).
+    #   demo-legacy - first-party single-node postgres Deployment (rollback path).
+    mode: external
+    # Used in external/demo-legacy modes; ignored in managed/demo (host = CNPG -rw service).
     host: "postgres"
     port: 5432
     database: opennms
@@ -29,6 +36,10 @@ global:
     password: opennms
     passwordKey: password
     # Prefer this in production: name of a pre-created Secret holding the password.
+    # In managed/demo modes this Secret MUST be type kubernetes.io/basic-auth with
+    # keys `username` (equal to global.postgres.username) and `password` — CNPG
+    # consumes it as the Cluster bootstrap secret and will mis-bootstrap an Opaque
+    # or username-mismatched Secret.
     existingSecret: ""
 
 # Per-daemon Prometheus scraping via ServiceMonitor (requires Prometheus/VM
@@ -271,9 +282,43 @@ initJobs:
     flowsAggTtlDays: "90"
 
 # ---------------------------------------------------------------------------
+# CloudNativePG-managed PostgreSQL. Rendered as a CNPG `Cluster`
+# (templates/backing/postgres-cluster.yaml) when global.postgres.mode is
+# `managed` or `demo`. Requires the CNPG operator (postgresql.cnpg.io CRDs)
+# installed in the cluster — assume-installed, NOT a vendored subchart. PG 16 is
+# the supported/tested operand.
+# ---------------------------------------------------------------------------
+postgresCluster:
+  imageName: "ghcr.io/cloudnative-pg/postgresql:16"
+  # Production HA preset (mode=managed): >=3 instances, anti-affinity, WAL storage.
+  managed:
+    instances: 3
+    storage:
+      size: 10Gi
+      storageClass: ""      # blank = cluster default StorageClass
+    walStorage:
+      size: 2Gi
+      storageClass: ""
+    # Tuned PostgreSQL parameters. max_connections matches the OpenNMS profile.
+    parameters:
+      max_connections: "350"
+    resources: {}
+  # Single-node ephemeral preset (mode=demo): 1 instance, no WAL storage.
+  demo:
+    instances: 1
+    storage:
+      size: 1Gi
+      storageClass: ""
+    parameters:
+      max_connections: "350"
+    resources: {}
+
+# ---------------------------------------------------------------------------
 # Demo datastores (PostgreSQL + Kafka). First-party manifests (not Bitnami) —
 # templates/demo-backing.yaml. OFF here: production points global.* at external
 # services. values-demo.yaml turns this ON. Single-node, no persistence — a demo.
+# The raw postgres Deployment backs external/demo-legacy demos only; managed/demo
+# modes use the CNPG Cluster above instead. Kafka is unaffected (own migration).
 # ---------------------------------------------------------------------------
 demoBackingServices:
   enabled: false

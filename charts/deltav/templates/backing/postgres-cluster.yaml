@@ -1,0 +1,65 @@
+{{/*
+CloudNativePG `Cluster` for the PostgreSQL backing. Rendered only when
+global.postgres.mode is `managed` or `demo`. Requires the CNPG operator
+(postgresql.cnpg.io CRDs) installed in the cluster — assume-installed, NOT a
+vendored subchart (consistent with the chart's ServiceMonitor/operator-CRD
+convention).
+
+  managed - production HA: >=3 instances, pod anti-affinity, dedicated WAL storage
+  demo    - single-node ephemeral: 1 instance, no WAL storage
+
+The bootstrap secret is the chart-managed DB Secret (deltav.dbSecretName), a
+kubernetes.io/basic-auth Secret whose `username` MUST equal initdb.owner — CNPG
+only applies the password when they match. The daemons consume the SAME secret,
+so the Cluster and the app always share one credential source. PostgreSQL 16 is
+the supported/tested operand; the `-rw` Service the operator creates is what
+deltav.pgHost resolves to.
+*/}}
+{{- $mode := include "deltav.postgres.mode" . -}}
+{{- if or (eq $mode "managed") (eq $mode "demo") -}}
+{{- $pg := .Values.global.postgres -}}
+{{- $cluster := .Values.postgresCluster -}}
+{{- $cfg := index $cluster $mode -}}
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: {{ include "deltav.fullname" . }}-pg
+  labels:
+    {{- include "deltav.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres
+spec:
+  instances: {{ $cfg.instances }}
+  imageName: {{ $cluster.imageName | quote }}
+  bootstrap:
+    initdb:
+      database: {{ $pg.database | default "opennms" | quote }}
+      owner: {{ $pg.username | default "opennms" | quote }}
+      secret:
+        name: {{ include "deltav.dbSecretName" . }}
+  storage:
+    size: {{ $cfg.storage.size | quote }}
+    {{- with $cfg.storage.storageClass }}
+    storageClass: {{ . | quote }}
+    {{- end }}
+  {{- with $cfg.walStorage }}
+  walStorage:
+    size: {{ .size | quote }}
+    {{- with .storageClass }}
+    storageClass: {{ . | quote }}
+    {{- end }}
+  {{- end }}
+  {{- if eq $mode "managed" }}
+  affinity:
+    enablePodAntiAffinity: true
+    topologyKey: kubernetes.io/hostname
+  {{- end }}
+  {{- with $cfg.parameters }}
+  postgresql:
+    parameters:
+      {{- toYaml . | nindent 6 }}
+  {{- end }}
+  {{- with $cfg.resources }}
+  resources:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end }}

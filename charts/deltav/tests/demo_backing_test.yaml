@@ -20,6 +20,24 @@ tests:
       - documentSelector: { path: "spec.template.spec.containers[0].name", value: kafka }
         isKind: { of: Deployment }
 
+  - it: demo-legacy keeps the raw postgres Deployment (no CNPG)
+    set:
+      demoBackingServices: { enabled: true }
+      global: { postgres: { mode: demo-legacy } }
+    asserts:
+      - hasDocuments: { count: 4 }
+      - documentSelector: { path: "spec.template.spec.containers[0].name", value: postgres }
+        isKind: { of: Deployment }
+
+  - it: demo mode (CNPG) drops the raw postgres Deployment, keeps kafka
+    set:
+      demoBackingServices: { enabled: true }
+      global: { postgres: { mode: demo } }
+    asserts:
+      - hasDocuments: { count: 2 }
+      - documentSelector: { path: "spec.template.spec.containers[0].name", value: kafka }
+        isKind: { of: Deployment }
+
   - it: the postgres backing Deployment is a pre-install hook before db-init (-5)
     set:
       demoBackingServices:

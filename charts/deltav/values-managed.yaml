@@ -1,0 +1,32 @@
+# Delta-V — production preset: CloudNativePG-managed PostgreSQL.
+#
+# Provisions a production-grade HA PostgreSQL via the CloudNativePG operator,
+# which MUST already be installed in the cluster (assume-installed; the chart
+# does not vendor it). Kafka and ClickHouse remain EXTERNAL here — supply
+# global.kafka.bootstrapServers and the ClickHouse connection — until their own
+# operator migrations land (Strimzi / Altinity, separate changes).
+#
+#   helm install deltav charts/deltav -f charts/deltav/values-managed.yaml \
+#     --set global.postgres.password=<strong-password>      # or use existingSecret
+#
+# REQUIRED: provide global.postgres.password (non-default) OR
+# global.postgres.existingSecret (a kubernetes.io/basic-auth Secret whose
+# `username` equals global.postgres.username). The chart refuses to render a
+# managed Cluster with the built-in default password.
+
+global:
+  postgres:
+    mode: managed
+    # password: ""        # REQUIRED — set via --set or an override values file
+    # existingSecret: ""  # ...or reference a pre-created basic-auth Secret
+
+# Production HA sizing — tune to your capacity. Defaults below override the
+# chart's managed defaults (10Gi/2Gi) with larger volumes; 3 instances + pod
+# anti-affinity + max_connections=350 come from values.yaml.
+postgresCluster:
+  managed:
+    instances: 3
+    storage:
+      size: 50Gi
+    walStorage:
+      size: 10Gi

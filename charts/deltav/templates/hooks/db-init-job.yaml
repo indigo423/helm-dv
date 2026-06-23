@@ -1,9 +1,25 @@
 {{/*
-Schema migration (Liquibase) — runs once before daemons, as a Helm hook.
-Replaces the compose db-init service + its depends_on ordering: daemons that
-need the schema simply converge via their readiness probe after this completes.
+Schema migration (Liquibase) — runs once before daemons converge.
+
+Ordering differs by postgres mode:
+  external / demo-legacy  - db-init is a pre-install/pre-upgrade hook (weight -5);
+                            the backing postgres already exists (external endpoint,
+                            or the demo Deployment at weight -20).
+  managed / demo (CNPG)   - the CNPG `Cluster` is a NORMAL resource created in the
+                            main install phase (kept persistent / operator-owned —
+                            NOT a hook, so upgrades never wipe data). db-init must
+                            therefore run as a POST-install/upgrade hook, after the
+                            Cluster exists, and block on pg_isready against the
+                            read-write Service until the operator elects a primary.
+
+db-init connects as the database owner (global.postgres.username) to the owned
+database (managed/demo) rather than template1 — CNPG initdb already provisions the
+role + database, so CREATE_USER stays false.
 */}}
 {{- if .Values.initJobs.dbInit.enabled }}
+{{- $mode := include "deltav.postgres.mode" . }}
+{{- $cnpg := or (eq $mode "managed") (eq $mode "demo") }}
+{{- $adminDb := ternary (.Values.global.postgres.database | default "opennms") "template1" $cnpg }}
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -12,9 +28,19 @@ metadata:
     {{- include "deltav.labels" . | nindent 4 }}
     app.kubernetes.io/component: db-init
   annotations:
+    {{- if $cnpg }}
+    # managed/demo: post-install ONLY. The CNPG Cluster persists across upgrades
+    # (normal resource), and the db-init image cannot re-run against an existing
+    # schema (upstream Migrator.databaseSetOwner bind-parameter bug fails on any
+    # re-invocation), so a post-upgrade run would fail the release. Schema is
+    # migrated once at install; on-upgrade re-migration awaits the upstream fix.
+    "helm.sh/hook": post-install
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+    {{- else }}
     "helm.sh/hook": pre-install,pre-upgrade
     "helm.sh/hook-weight": "-5"
     "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+    {{- end }}
 spec:
   backoffLimit: {{ .Values.initJobs.dbInit.backoffLimit | default 6 }}
   template:
@@ -28,7 +54,17 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- if .Values.demoBackingServices.enabled }}
+      {{- if $cnpg }}
+      # managed/demo: wait for the CNPG primary via the read-write Service (it has
+      # no endpoint until the operator elects a primary) before migrating.
+      initContainers:
+        - name: wait-for-postgres
+          image: {{ .Values.postgresCluster.imageName | quote }}
+          command:
+            - sh
+            - -c
+            - 'until pg_isready -h {{ include "deltav.pgHost" . }} -p {{ .Values.global.postgres.port | default 5432 }}; do echo "waiting for postgres..."; sleep 2; done'
+      {{- else if .Values.demoBackingServices.enabled }}
       # Demo only: the first-party postgres is a pre-install hook (weight -20),
       # created before this db-init hook (-5) — block until it accepts
       # connections so the migration never races a not-yet-ready DB.
@@ -46,7 +82,7 @@ spec:
           imagePullPolicy: {{ .Values.global.image.pullPolicy }}
           env:
             - name: OPENNMS_DBINIT_ADMIN_URL
-              value: {{ printf "jdbc:postgresql://%s:%v/template1" (include "deltav.pgHost" .) (.Values.global.postgres.port | default 5432) | quote }}
+              value: {{ printf "jdbc:postgresql://%s:%v/%s" (include "deltav.pgHost" .) (.Values.global.postgres.port | default 5432) $adminDb | quote }}
             - name: OPENNMS_DBINIT_ADMIN_USER
               value: {{ .Values.global.postgres.username | default "opennms" | quote }}
             - name: OPENNMS_DBINIT_ADMIN_PASSWORD

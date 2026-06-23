@@ -17,6 +17,11 @@ global:
   kafka:
     bootstrapServers: "kafka:9092"
   postgres:
+    # CloudNativePG-managed single-node demo (the CNPG operator must be installed
+    # — `make kind-test` installs it). Use mode: demo-legacy for the operator-free
+    # raw postgres Deployment. A non-default password is not required for demo.
+    mode: demo
+    password: demo
     host: postgres
 
 # ServiceMonitor needs the Prometheus-Operator CRDs, absent on bare kind/minikube
