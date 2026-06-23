@@ -30,10 +30,18 @@ selected by **`global.postgres.mode`**:
 
 ---
 
-## 1. External (production, bring-your-own Postgres)
+## 1. External (production, bring-your-own backing services)
 
-The chart provisions **no** datastore — your daemons connect to an existing
-PostgreSQL, Kafka (and ClickHouse for flows). This is the default mode.
+The chart provisions **no** datastores — your daemons connect to your existing
+services. This is the default mode; each service is pointed at independently:
+
+| Service | Point at your own with | Default |
+|---|---|---|
+| **PostgreSQL** | `global.postgres.host`, `.database`, `.username`, `.existingSecret` | `mode: external` |
+| **Kafka** | `global.kafka.bootstrapServers` | `kafka:9092` |
+| **ClickHouse** (flow schema) | `clickhouse.external=true`, `clickhouse.host`, `clickhouse.auth.username/password` — runs the `clickhouse-init` DDL (the flow→ClickHouse consumer is out-of-chart, see note) | `clickhouse-init` off |
+| **VictoriaMetrics** (metrics) | keep `victoriametrics.enabled=false`; enable `daemons.prometheus-writer` and set its `PROMETHEUS_WRITER_REMOTE_WRITE_URL` to your VM remote-write endpoint | subchart off |
+| **Grafana** (dashboards) | keep `grafana.enabled=false`; run your own Grafana and add your metrics store as a datasource | subchart off |
 
 **1. Create a Secret with the DB password** (key `password`):
 
@@ -42,19 +50,39 @@ kubectl create secret generic deltav-db \
   --from-literal=password='<your-postgres-password>'
 ```
 
-**2. Install, pointing at your backing services:**
+**2. Install, pointing at your services.** PostgreSQL + Kafka are the minimum; add
+the ClickHouse / VictoriaMetrics lines only if you run those services (omit them
+otherwise — this is one command):
 
 ```bash
 helm install deltav deltav/deltav \
-  --set global.kafka.bootstrapServers=my-kafka-bootstrap:9092 \
   --set global.postgres.host=my-postgres.db.svc \
   --set global.postgres.database=opennms \
   --set global.postgres.username=opennms \
-  --set global.postgres.existingSecret=deltav-db
+  --set global.postgres.existingSecret=deltav-db \
+  --set global.kafka.bootstrapServers=my-kafka-bootstrap:9092 \
+  --set clickhouse.external=true \
+  --set clickhouse.host=my-clickhouse.svc \
+  --set clickhouse.auth.username=deltav \
+  --set-string clickhouse.auth.password='<clickhouse-password>' \
+  --set daemons.prometheus-writer.enabled=true \
+  --set-string daemons.prometheus-writer.extraEnv.PROMETHEUS_WRITER_REMOTE_WRITE_URL=http://my-victoriametrics:8428/api/v1/write
 ```
 
-> `global.postgres.mode` defaults to `external`, so no `--set` for it is needed.
-> The `db-init` schema migration runs as a `pre-install` hook against your Postgres.
+> `global.postgres.mode` defaults to `external`. The **Grafana** and
+> **VictoriaMetrics** subcharts stay off (`grafana.enabled=false`,
+> `victoriametrics.enabled=false`) — bring your own and point Grafana's datasource
+> at your metrics store. The `db-init` schema migration runs as a `pre-install`
+> hook against your Postgres.
+>
+> **ClickHouse is schema-only here:** `clickhouse.external=true` runs the
+> `clickhouse-init` DDL against your ClickHouse, and the `flow-enricher` daemon
+> (on by default) publishes enriched flows to the Kafka topic `deltav-flows`. The
+> consumer that *writes* those flows into ClickHouse is **not** part of this chart
+> — supply your own.
+>
+> Use `--set-string` for URLs/passwords, and prefer a `-f my-values.yaml` overlay
+> over a long `--set` chain (passwords containing `,` break bare `--set`).
 
 **3. Verify:**
 
