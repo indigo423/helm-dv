@@ -3,6 +3,42 @@ entries:
   deltav:
   - apiVersion: v2
     appVersion: 1.3.0
+    created: "2026-06-23T16:40:25.95690063Z"
+    dependencies:
+    - alias: victoriametrics
+      condition: victoriametrics.enabled
+      name: victoria-metrics-single
+      repository: https://victoriametrics.github.io/helm-charts/
+      version: 0.40.1
+    - condition: grafana.enabled
+      name: grafana
+      repository: https://grafana.github.io/helm-charts
+      version: 10.5.15
+    description: 'Delta-V — composable, containerized OpenNMS Horizon. Deploys the
+      Spring Boot daemon plane (alarmd, pollerd, collectd, …), the flow pipeline,
+      and the Minion ingress plane (envoy + minion-gateway). Backing services (PostgreSQL,
+      Kafka, ClickHouse, VictoriaMetrics, Grafana) are optional, condition-gated subcharts:
+      off by default (point at external/operator-managed instances); flipped on by
+      the bundled values-demo.yaml for a self-contained in-cluster demo. '
+    digest: 6a3461eb2b5aa6090c8059fb44160b7d293c64792e0d3f575dd36f4401052683
+    home: https://github.com/pbrane/delta-v
+    keywords:
+    - opennms
+    - monitoring
+    - network
+    - kafka
+    kubeVersion: '>=1.25.0-0'
+    maintainers:
+    - name: Delta-V
+    name: deltav
+    sources:
+    - https://github.com/pbrane/delta-v
+    type: application
+    urls:
+    - https://github.com/indigo423/helm-dv/releases/download/v0.2.0/deltav-0.2.0.tgz
+    version: 0.2.0
+  - apiVersion: v2
+    appVersion: 1.3.0
     created: "2026-06-22T16:30:58.109488144Z"
     dependencies:
     - alias: victoriametrics
@@ -37,4 +73,4 @@ entries:
     urls:
     - https://github.com/indigo423/helm-dv/releases/download/v0.1.0/deltav-0.1.0.tgz
     version: 0.1.0
-generated: "2026-06-22T16:30:58.109500538Z"
+generated: "2026-06-23T16:40:25.956912762Z"
