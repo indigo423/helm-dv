@@ -1,0 +1,86 @@
+suite: backing-service mode enum and resolvers
+release:
+  name: deltav
+  namespace: default
+tests:
+  - it: optional services default to off — no clickhouse-init by default
+    templates:
+      - templates/hooks/clickhouse-init-job.yaml
+    asserts:
+      - hasDocuments: { count: 0 }
+
+  - it: an invalid required-service mode fails rendering with the allowed set
+    templates:
+      - templates/daemons.yaml
+    set:
+      global: { kafka: { mode: bogus } }
+    asserts:
+      - failedTemplate:
+          errorPattern: 'global\.kafka\.mode must be one of \[external managed demo\], got "bogus"'
+
+  - it: managed clickhouse is reserved and fails with a directive
+    templates:
+      - templates/hooks/clickhouse-init-job.yaml
+    set:
+      global: { clickhouse: { mode: managed } }
+    asserts:
+      - failedTemplate:
+          errorPattern: 'global\.clickhouse\.mode: managed is not yet implemented'
+
+  - it: external clickhouse renders the init job against the configured host
+    templates:
+      - templates/hooks/clickhouse-init-job.yaml
+    set:
+      global:
+        clickhouse:
+          mode: external
+          host: ch.example
+          auth: { username: flowuser }
+    asserts:
+      - hasDocuments: { count: 1 }
+      - equal:
+          path: spec.template.spec.containers[0].env[0].value
+          value: "ch.example"
+      - equal:
+          path: spec.template.spec.containers[0].env[1].value
+          value: "flowuser"
+
+  - it: legacy clickhouse.external=true is honored via the deprecation shim
+    templates:
+      - templates/hooks/clickhouse-init-job.yaml
+    set:
+      clickhouse: { external: true, host: legacy.ch }
+    asserts:
+      - hasDocuments: { count: 1 }
+      - equal:
+          path: spec.template.spec.containers[0].env[0].value
+          value: "legacy.ch"
+
+  - it: new global.clickhouse.host wins over the legacy top-level key
+    templates:
+      - templates/hooks/clickhouse-init-job.yaml
+    set:
+      global: { clickhouse: { mode: external, host: new.ch } }
+      clickhouse: { host: legacy.ch }
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].env[0].value
+          value: "new.ch"
+
+  - it: external metrics resolves the prometheus-writer remote-write URL via the helper
+    templates:
+      - templates/daemons.yaml
+    documentSelector:
+      path: spec.template.spec.containers[0].name
+      value: prometheus-writer
+    set:
+      global:
+        metrics:
+          mode: external
+          remoteWriteUrl: https://vm.example/api/v1/write
+      daemons:
+        prometheus-writer: { enabled: true }
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].env[?(@.name=="PROMETHEUS_WRITER_REMOTE_WRITE_URL")].value
+          value: https://vm.example/api/v1/write

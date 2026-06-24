@@ -49,6 +49,100 @@ subchart (fullnameOverride: kafka) and external endpoints both work.
 {{- end -}}
 
 {{/*
+Generic backing-service mode validator. Call with a dict:
+  (dict "root" $ "service" "clickhouse" "mode" $mode "allowed" (list "off" "external" "managed" "demo"))
+Fails rendering on an unknown value, or on `managed` (reserved until the operator
+change lands). Returns the validated mode unchanged. Optional services include
+"off" in their allowed set; required services (postgres/kafka) do not.
+*/}}
+{{- define "deltav.backingMode" -}}
+{{- $svc := .service -}}
+{{- $mode := .mode -}}
+{{- $allowed := .allowed -}}
+{{- if not (has $mode $allowed) -}}
+{{- fail (printf "global.%s.mode must be one of %v, got %q" $svc $allowed $mode) -}}
+{{- end -}}
+{{- if eq $mode "managed" -}}
+{{- fail (printf "global.%s.mode: managed is not yet implemented in this chart — use external (bring-your-own), or track the dedicated operator change for %s. See chart docs." $svc $svc) -}}
+{{- end -}}
+{{- $mode -}}
+{{- end -}}
+
+{{/* Effective Kafka mode (required: external|managed|demo, default external). */}}
+{{- define "deltav.kafka.mode" -}}
+{{- include "deltav.backingMode" (dict "root" . "service" "kafka" "mode" (.Values.global.kafka.mode | default "external") "allowed" (list "external" "managed" "demo")) -}}
+{{- end -}}
+
+{{/*
+Effective ClickHouse mode (optional: off|external|managed|demo, default off).
+Deprecation shim: when global.clickhouse.mode is unset, the prior top-level
+clickhouse.enabled/external toggles map to external (on) or off.
+*/}}
+{{- define "deltav.clickhouse.mode" -}}
+{{- $g := .Values.global.clickhouse | default dict -}}
+{{- $legacy := .Values.clickhouse | default dict -}}
+{{- $mode := $g.mode | default (ternary "external" "off" (or $legacy.enabled $legacy.external | default false)) -}}
+{{- include "deltav.backingMode" (dict "root" . "service" "clickhouse" "mode" $mode "allowed" (list "off" "external" "managed" "demo")) -}}
+{{- end -}}
+
+{{/* Effective metrics (remote-write target) mode (optional: off|external|managed|demo, default off). */}}
+{{- define "deltav.metrics.mode" -}}
+{{- include "deltav.backingMode" (dict "root" . "service" "metrics" "mode" (.Values.global.metrics.mode | default "off") "allowed" (list "off" "external" "managed" "demo")) -}}
+{{- end -}}
+
+{{/* Effective Grafana mode (optional: off|external|managed|demo, default off). */}}
+{{- define "deltav.grafana.mode" -}}
+{{- include "deltav.backingMode" (dict "root" . "service" "grafana" "mode" (.Values.global.grafana.mode | default "off") "allowed" (list "off" "external" "managed" "demo")) -}}
+{{- end -}}
+
+{{/*
+Validate every backing-service mode on each render. Emits nothing; fails fast on
+an unknown or not-yet-implemented (managed) value for any service. Invoked once
+from an always-rendered template (daemons.yaml).
+*/}}
+{{- define "deltav.validateModes" -}}
+{{- $m := include "deltav.kafka.mode" . -}}
+{{- $m = include "deltav.clickhouse.mode" . -}}
+{{- $m = include "deltav.metrics.mode" . -}}
+{{- $m = include "deltav.grafana.mode" . -}}
+{{- end -}}
+
+{{/*
+Resolved ClickHouse host. Coalesces global.clickhouse.host (new) → top-level
+clickhouse.host (deprecated shim) → "clickhouse". Single source for the
+clickhouse-init Job's connection.
+*/}}
+{{- define "deltav.clickhouseHost" -}}
+{{- $g := .Values.global.clickhouse | default dict -}}
+{{- $legacy := .Values.clickhouse | default dict -}}
+{{- coalesce $g.host $legacy.host "clickhouse" -}}
+{{- end -}}
+
+{{/*
+Resolved metrics remote-write URL. Single source of truth for the
+prometheus-writer / alerts-forwarder push target. Default matches the demo VM
+service so the bundled subchart and external endpoints both work.
+*/}}
+{{- define "deltav.metricsRemoteWriteUrl" -}}
+{{- $m := .Values.global.metrics | default dict -}}
+{{- $m.remoteWriteUrl | default "http://victoriametrics:8428/api/v1/write" -}}
+{{- end -}}
+
+{{/*
+Resolved Grafana datasource URL — the read endpoint of the metrics backend.
+Derives from the metrics remote-write URL (strips the /api/v1/write suffix) so
+Grafana and prometheus-writer agree on one metrics store.
+*/}}
+{{- define "deltav.grafanaDatasourceUrl" -}}
+{{- $g := .Values.global.grafana | default dict -}}
+{{- if $g.datasourceUrl -}}
+{{- $g.datasourceUrl -}}
+{{- else -}}
+{{- include "deltav.metricsRemoteWriteUrl" . | trimSuffix "/api/v1/write" -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
 Effective backing-service mode for PostgreSQL. One of:
   external     - chart provisions nothing; wire to global.postgres.host + secret (default)
   managed      - CloudNativePG-provisioned HA Cluster (CNPG operator assumed installed)

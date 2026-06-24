@@ -1,9 +1,11 @@
 {{/*
-ClickHouse DDL bootstrap — Helm hook, gated on the flow store being present
-(either the bundled clickhouse subchart or an external one declared reachable
-via clickhouse.external). Skipped entirely when neither is in play.
+ClickHouse DDL bootstrap — Helm hook, gated on the ClickHouse mode being
+`external` (global.clickhouse.mode, with the legacy clickhouse.enabled/external
+shim). Skipped when the mode is `off`. `managed`/`demo` fail in the mode helper.
 */}}
-{{- if and .Values.initJobs.clickhouseInit.enabled (or .Values.clickhouse.enabled .Values.clickhouse.external) }}
+{{- if and .Values.initJobs.clickhouseInit.enabled (eq (include "deltav.clickhouse.mode" .) "external") }}
+{{- $ch := .Values.global.clickhouse | default dict }}
+{{- $chLegacy := .Values.clickhouse | default dict }}
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -34,11 +36,11 @@ spec:
           imagePullPolicy: {{ .Values.global.image.pullPolicy }}
           env:
             - name: CLICKHOUSE_HOST
-              value: {{ .Values.clickhouse.host | default "clickhouse" | quote }}
+              value: {{ include "deltav.clickhouseHost" . | quote }}
             - name: CLICKHOUSE_USER
-              value: {{ .Values.clickhouse.auth.username | default "deltav" | quote }}
+              value: {{ coalesce (dig "auth" "username" "" $ch) (dig "auth" "username" "" $chLegacy) "deltav" | quote }}
             - name: CLICKHOUSE_PASSWORD
-              value: {{ .Values.clickhouse.auth.password | default "deltav" | quote }}
+              value: {{ coalesce (dig "auth" "password" "" $ch) (dig "auth" "password" "" $chLegacy) "deltav" | quote }}
             - name: DELTAV_CLICKHOUSE_FLOWS_RAW_TTL_DAYS
               value: {{ .Values.initJobs.clickhouseInit.flowsRawTtlDays | quote }}
             - name: DELTAV_CLICKHOUSE_FLOWS_AGG_TTL_DAYS
