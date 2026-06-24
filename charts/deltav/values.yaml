@@ -409,9 +409,10 @@ demoBackingServices:
 # ---------------------------------------------------------------------------
 # Demo subcharts (non-Bitnami), condition-gated by enabled. OFF here; flipped on
 # by values-demo.yaml. NOTE: Helm routes subchart values by dependency name/alias,
-# so these stay top-level (they cannot move under global.*). The demo preset sets
-# both global.metrics.mode/global.grafana.mode AND the matching enabled here —
-# Helm's static `condition:` cannot evaluate mode == demo.
+# so these stay top-level (they cannot move under global.*). For the optional
+# services global.metrics.mode/global.grafana.mode are validation-only (Helm's
+# static `condition:` cannot evaluate mode == demo), so the demo preset leaves
+# them at their default and turns the subchart on via `enabled` below.
 # ---------------------------------------------------------------------------
 victoriametrics:
   enabled: false

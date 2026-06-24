@@ -39,10 +39,10 @@ tests:
     asserts:
       - hasDocuments: { count: 1 }
       - equal:
-          path: spec.template.spec.containers[0].env[0].value
+          path: spec.template.spec.containers[0].env[?(@.name=="CLICKHOUSE_HOST")].value
           value: "ch.example"
       - equal:
-          path: spec.template.spec.containers[0].env[1].value
+          path: spec.template.spec.containers[0].env[?(@.name=="CLICKHOUSE_USER")].value
           value: "flowuser"
 
   - it: legacy clickhouse.external=true is honored via the deprecation shim
@@ -53,7 +53,7 @@ tests:
     asserts:
       - hasDocuments: { count: 1 }
       - equal:
-          path: spec.template.spec.containers[0].env[0].value
+          path: spec.template.spec.containers[0].env[?(@.name=="CLICKHOUSE_HOST")].value
           value: "legacy.ch"
 
   - it: new global.clickhouse.host wins over the legacy top-level key
@@ -64,7 +64,7 @@ tests:
       clickhouse: { host: legacy.ch }
     asserts:
       - equal:
-          path: spec.template.spec.containers[0].env[0].value
+          path: spec.template.spec.containers[0].env[?(@.name=="CLICKHOUSE_HOST")].value
           value: "new.ch"
 
   - it: external metrics resolves the prometheus-writer remote-write URL via the helper
@@ -84,3 +84,30 @@ tests:
       - equal:
           path: spec.template.spec.containers[0].env[?(@.name=="PROMETHEUS_WRITER_REMOTE_WRITE_URL")].value
           value: https://vm.example/api/v1/write
+
+  - it: kafka security.existingSecret without protocol fails fast (no silent dangling credential)
+    templates:
+      - templates/daemons.yaml
+    set:
+      global: { kafka: { security: { existingSecret: kafka-creds } } }
+    asserts:
+      - failedTemplate:
+          errorPattern: 'existingSecret is set but global\.kafka\.security\.protocol is empty'
+
+  - it: invalid metrics auth type fails with the allowed schemes
+    templates:
+      - templates/daemons.yaml
+    set:
+      global: { metrics: { auth: { type: oauth, existingSecret: s } } }
+    asserts:
+      - failedTemplate:
+          errorPattern: 'global\.metrics\.auth\.type must be one of \[bearer basic\], got "oauth"'
+
+  - it: managed mode names the specific operator (Strimzi for kafka)
+    templates:
+      - templates/daemons.yaml
+    set:
+      global: { kafka: { mode: managed } }
+    asserts:
+      - failedTemplate:
+          errorPattern: 'track the Strimzi operator change'

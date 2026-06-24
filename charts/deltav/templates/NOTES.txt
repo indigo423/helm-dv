@@ -15,6 +15,12 @@ Minion ingress:
 Backing services:
   demo postgres+kafka : {{ if .Values.demoBackingServices.enabled }}on (first-party, in-chart){{ else }}off — using external services{{ end }}
   victoriametrics     : {{ .Values.victoriametrics.enabled }}  grafana={{ .Values.grafana.enabled }}
+{{- if .Values.clickhouse }}
+
+DEPRECATION: top-level `clickhouse.*` values are deprecated — migrate to
+`global.clickhouse.*` (mode/host/auth). The legacy keys are honored for one
+release via a compatibility shim and will be removed in a future release.
+{{- end }}
 
 Check daemon health:
   kubectl -n {{ .Release.Namespace }} get pods -l app.kubernetes.io/instance={{ .Release.Name }}

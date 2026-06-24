@@ -120,3 +120,38 @@ tests:
       - equal:
           path: spec.template.spec.containers[0].env[?(@.name=="PROMETHEUS_WRITER_BASIC_PASS")].valueFrom.secretKeyRef.name
           value: vm-basic
+
+  - it: minion-gateway receives kafka auth (JAAS file + spring env + mounts)
+    templates:
+      - templates/minion-gateway.yaml
+    documentSelector:
+      path: kind
+      value: Deployment
+    set:
+      global:
+        kafka:
+          security: { protocol: SASL_SSL, saslMechanism: SCRAM-SHA-512, existingSecret: kafka-creds }
+          tls: { existingSecret: kafka-tls }
+    asserts:
+      - matchRegex:
+          path: spec.template.spec.containers[0].env[?(@.name=="JAVA_OPTS")].value
+          pattern: -Djava\.security\.auth\.login\.config=/etc/deltav/kafka/jaas/jaas\.conf
+      - equal:
+          path: spec.template.spec.containers[0].env[?(@.name=="SPRING_KAFKA_PROPERTIES_SECURITY_PROTOCOL")].value
+          value: SASL_SSL
+      - equal:
+          path: spec.template.spec.volumes[?(@.name=="kafka-jaas")].secret.secretName
+          value: kafka-creds
+
+  - it: minion-gateway is unchanged when no kafka auth is configured
+    templates:
+      - templates/minion-gateway.yaml
+    documentSelector:
+      path: kind
+      value: Deployment
+    asserts:
+      - notExists:
+          path: spec.template.spec.volumes
+      - equal:
+          path: spec.template.spec.containers[0].env[?(@.name=="JAVA_OPTS")].value
+          value: "-Xms256m -Xmx512m"

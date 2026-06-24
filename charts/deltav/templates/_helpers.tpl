@@ -63,7 +63,9 @@ change lands). Returns the validated mode unchanged. Optional services include
 {{- fail (printf "global.%s.mode must be one of %v, got %q" $svc $allowed $mode) -}}
 {{- end -}}
 {{- if eq $mode "managed" -}}
-{{- fail (printf "global.%s.mode: managed is not yet implemented in this chart — use external (bring-your-own), or track the dedicated operator change for %s. See chart docs." $svc $svc) -}}
+{{- $operators := dict "kafka" "Strimzi" "clickhouse" "Altinity" "metrics" "the VictoriaMetrics Operator" "grafana" "the Grafana Operator" -}}
+{{- $op := index $operators $svc | default "the dedicated operator" -}}
+{{- fail (printf "global.%s.mode: managed is not yet implemented in this chart — use external (bring-your-own), or track the %s operator change. See chart docs." $svc $op) -}}
 {{- end -}}
 {{- $mode -}}
 {{- end -}}
@@ -216,6 +218,39 @@ from an always-rendered template (daemons.yaml).
 {{- $m = include "deltav.clickhouse.mode" . -}}
 {{- $m = include "deltav.metrics.mode" . -}}
 {{- $m = include "deltav.grafana.mode" . -}}
+{{/* A mounted Kafka SASL credential is inert without a security protocol — fail loudly. */}}
+{{- $ksec := .Values.global.kafka.security | default dict -}}
+{{- if and ($ksec.existingSecret | default "") (not ($ksec.protocol | default "")) -}}
+{{- fail "global.kafka.security.existingSecret is set but global.kafka.security.protocol is empty — set the protocol (e.g. SASL_SSL) so the mounted JAAS credential is actually used." -}}
+{{- end -}}
+{{/* Metrics remote-write auth type must be a known scheme. */}}
+{{- $mauth := .Values.global.metrics.auth | default dict -}}
+{{- if and ($mauth.type | default "") (not (has ($mauth.type) (list "bearer" "basic"))) -}}
+{{- fail (printf "global.metrics.auth.type must be one of [bearer basic], got %q" $mauth.type) -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Kafka security volume mounts + volumes (kafka-tls, kafka-jaas), gated on the
+respective existingSecret. Shared by _daemon.tpl-style components and the
+minion-gateway. Call with the root context.
+*/}}
+{{- define "deltav.kafkaSecurityVolumeMounts" -}}
+{{- $tls := .Values.global.kafka.tls | default dict -}}
+{{- $sec := .Values.global.kafka.security | default dict -}}
+{{- $mounts := list -}}
+{{- if $tls.existingSecret -}}{{- $mounts = append $mounts (dict "name" "kafka-tls" "mountPath" "/etc/deltav/kafka/tls" "readOnly" true) -}}{{- end -}}
+{{- if $sec.existingSecret -}}{{- $mounts = append $mounts (dict "name" "kafka-jaas" "mountPath" "/etc/deltav/kafka/jaas" "readOnly" true) -}}{{- end -}}
+{{- toYaml $mounts -}}
+{{- end -}}
+
+{{- define "deltav.kafkaSecurityVolumes" -}}
+{{- $tls := .Values.global.kafka.tls | default dict -}}
+{{- $sec := .Values.global.kafka.security | default dict -}}
+{{- $vols := list -}}
+{{- if $tls.existingSecret -}}{{- $vols = append $vols (dict "name" "kafka-tls" "secret" (dict "secretName" $tls.existingSecret)) -}}{{- end -}}
+{{- if $sec.existingSecret -}}{{- $vols = append $vols (dict "name" "kafka-jaas" "secret" (dict "secretName" $sec.existingSecret)) -}}{{- end -}}
+{{- toYaml $vols -}}
 {{- end -}}
 
 {{/*
