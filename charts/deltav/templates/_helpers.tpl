@@ -96,6 +96,117 @@ clickhouse.enabled/external toggles map to external (on) or off.
 {{- end -}}
 
 {{/*
+Kafka external auth (resolved by the Phase-0 spike): the OpenNMS IPC namespaces
+(sink/rpc/twin) read Kafka config only from JVM system properties, so non-secret
+security goes via -D and the SASL credential via a mounted JAAS file referenced
+JVM-wide (never -D/env, no leakage). TLS uses PEM — no truststore password. Mount
+paths are fixed: TLS at /etc/deltav/kafka/tls, JAAS at /etc/deltav/kafka/jaas.
+*/}}
+
+{{/* "true" when any Kafka security/TLS is configured; empty otherwise. */}}
+{{- define "deltav.kafkaSecurityActive" -}}
+{{- $sec := .Values.global.kafka.security | default dict -}}
+{{- $tls := .Values.global.kafka.tls | default dict -}}
+{{- if or $sec.protocol $tls.existingSecret -}}true{{- end -}}
+{{- end -}}
+
+{{/* -D flags for the IPC namespaces (non-secret) + the JVM-wide JAAS login file. */}}
+{{- define "deltav.kafkaSecurityJavaOpts" -}}
+{{- $sec := .Values.global.kafka.security | default dict -}}
+{{- $tls := .Values.global.kafka.tls | default dict -}}
+{{- $opts := list -}}
+{{- range $ns := (list "sink" "rpc" "twin") -}}
+{{- if $sec.protocol -}}
+{{- $opts = append $opts (printf "-Dorg.opennms.core.ipc.%s.kafka.security.protocol=%s" $ns $sec.protocol) -}}
+{{- if $sec.saslMechanism -}}{{- $opts = append $opts (printf "-Dorg.opennms.core.ipc.%s.kafka.sasl.mechanism=%s" $ns $sec.saslMechanism) -}}{{- end -}}
+{{- end -}}
+{{- if $tls.existingSecret -}}
+{{- $opts = append $opts (printf "-Dorg.opennms.core.ipc.%s.kafka.ssl.truststore.type=PEM" $ns) -}}
+{{- $opts = append $opts (printf "-Dorg.opennms.core.ipc.%s.kafka.ssl.truststore.location=/etc/deltav/kafka/tls/ca.crt" $ns) -}}
+{{- if $tls.mutual -}}
+{{- $opts = append $opts (printf "-Dorg.opennms.core.ipc.%s.kafka.ssl.keystore.type=PEM" $ns) -}}
+{{- $opts = append $opts (printf "-Dorg.opennms.core.ipc.%s.kafka.ssl.keystore.location=/etc/deltav/kafka/tls/tls.crt" $ns) -}}
+{{- $opts = append $opts (printf "-Dorg.opennms.core.ipc.%s.kafka.ssl.keystore.key=/etc/deltav/kafka/tls/tls.key" $ns) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- if $sec.existingSecret -}}{{- $opts = append $opts "-Djava.security.auth.login.config=/etc/deltav/kafka/jaas/jaas.conf" -}}{{- end -}}
+{{- join " " $opts -}}
+{{- end -}}
+
+{{/* Spring/Spring-Cloud-Stream security env (KafkaAdmin + binder clients). */}}
+{{- define "deltav.kafkaSecurityEnv" -}}
+{{- $sec := .Values.global.kafka.security | default dict -}}
+{{- $tls := .Values.global.kafka.tls | default dict -}}
+{{- if $sec.protocol -}}
+- name: SPRING_KAFKA_PROPERTIES_SECURITY_PROTOCOL
+  value: {{ $sec.protocol | quote }}
+- name: SPRING_CLOUD_STREAM_KAFKA_BINDER_CONFIGURATION_SECURITY_PROTOCOL
+  value: {{ $sec.protocol | quote }}
+{{- if $sec.saslMechanism }}
+- name: SPRING_KAFKA_PROPERTIES_SASL_MECHANISM
+  value: {{ $sec.saslMechanism | quote }}
+- name: SPRING_CLOUD_STREAM_KAFKA_BINDER_CONFIGURATION_SASL_MECHANISM
+  value: {{ $sec.saslMechanism | quote }}
+{{- end }}
+{{- end }}
+{{- if $tls.existingSecret }}
+- name: SPRING_KAFKA_PROPERTIES_SSL_TRUSTSTORE_TYPE
+  value: PEM
+- name: SPRING_KAFKA_PROPERTIES_SSL_TRUSTSTORE_LOCATION
+  value: /etc/deltav/kafka/tls/ca.crt
+- name: SPRING_CLOUD_STREAM_KAFKA_BINDER_CONFIGURATION_SSL_TRUSTSTORE_TYPE
+  value: PEM
+- name: SPRING_CLOUD_STREAM_KAFKA_BINDER_CONFIGURATION_SSL_TRUSTSTORE_LOCATION
+  value: /etc/deltav/kafka/tls/ca.crt
+{{- if $tls.mutual }}
+- name: SPRING_KAFKA_PROPERTIES_SSL_KEYSTORE_TYPE
+  value: PEM
+- name: SPRING_KAFKA_PROPERTIES_SSL_KEYSTORE_LOCATION
+  value: /etc/deltav/kafka/tls/tls.crt
+- name: SPRING_KAFKA_PROPERTIES_SSL_KEYSTORE_KEY
+  value: /etc/deltav/kafka/tls/tls.key
+{{- end }}
+{{- end }}
+{{- end -}}
+
+{{/* "true" when metrics remote-write auth is configured (type + secret). */}}
+{{- define "deltav.metricsAuthActive" -}}
+{{- $a := .Values.global.metrics.auth | default dict -}}
+{{- if and ($a.type | default "") ($a.existingSecret | default "") -}}true{{- end -}}
+{{- end -}}
+
+{{/*
+Metrics remote-write auth env for prometheus-writer, from global.metrics.auth.
+Bearer → token key; basic → username/password keys. Secret-backed, no plaintext.
+*/}}
+{{- define "deltav.metricsAuthEnv" -}}
+{{- $a := .Values.global.metrics.auth | default dict -}}
+{{- $type := $a.type | default "" -}}
+{{- $secret := $a.existingSecret | default "" -}}
+- name: PROMETHEUS_WRITER_AUTH_TYPE
+  value: {{ $type | quote }}
+{{- if eq $type "bearer" }}
+- name: PROMETHEUS_WRITER_BEARER_TOKEN
+  valueFrom:
+    secretKeyRef:
+      name: {{ $secret }}
+      key: token
+{{- else if eq $type "basic" }}
+- name: PROMETHEUS_WRITER_BASIC_USER
+  valueFrom:
+    secretKeyRef:
+      name: {{ $secret }}
+      key: username
+- name: PROMETHEUS_WRITER_BASIC_PASS
+  valueFrom:
+    secretKeyRef:
+      name: {{ $secret }}
+      key: password
+{{- end }}
+{{- end -}}
+
+{{/*
 Validate every backing-service mode on each render. Emits nothing; fails fast on
 an unknown or not-yet-implemented (managed) value for any service. Invoked once
 from an always-rendered template (daemons.yaml).

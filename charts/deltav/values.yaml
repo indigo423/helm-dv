@@ -25,6 +25,22 @@ global:
     # Bootstrap servers for all daemons. Blank-safe default matches the compose
     # hostname so the bundled Kafka subchart (fullnameOverride: kafka) just works.
     bootstrapServers: "kafka:9092"
+    # SASL auth for an authenticated external broker (Confluent Cloud, MSK, Aiven,
+    # Strimzi-with-SCRAM). Leave protocol blank for plaintext (default; no change).
+    # The credential travels as a mounted JAAS file (never -D/JAVA_OPTS), referenced
+    # JVM-wide; existingSecret MUST hold key `jaas.conf` with the full
+    # `sasl.jaas.config` login line. security.protocol/saslMechanism are non-secret.
+    security:
+      protocol: ""            # e.g. SASL_SSL | SASL_PLAINTEXT
+      saslMechanism: ""       # e.g. SCRAM-SHA-512 | PLAIN
+      existingSecret: ""      # Secret with key jaas.conf
+    # TLS via PEM (no truststore password). existingSecret is a kubernetes.io/tls
+    # Secret (ca.crt [+ tls.crt/tls.key for mTLS]) — cert-manager's shape. Blank =
+    # public-CA TLS via the JVM default trust store (or plaintext). Set mutual: true
+    # to also present the client cert/key (mTLS).
+    tls:
+      existingSecret: ""
+      mutual: false
   postgres:
     # Backing-service mode: external | managed | demo | demo-legacy.
     #   external    - chart provisions nothing; daemons wire to host + secret below (default).
@@ -60,8 +76,13 @@ global:
     host: ""                 # effective default: clickhouse
     auth:
       username: ""           # effective default: deltav
-      # Plaintext fallback; prefer auth.existingSecret (consumed via secretKeyRef).
+      # Plaintext fallback; prefer auth.existingSecret (consumed via secretKeyRef,
+      # key `password`).
       password: ""           # effective default: deltav
+      existingSecret: ""
+    # TLS to ClickHouse. existingSecret holds a CA bundle (key `ca.crt`); the chart
+    # mounts a clickhouse-client config.xml with <secure> referencing it (port 9440).
+    tls:
       existingSecret: ""
   # Metrics remote-write target (VictoriaMetrics or any Prometheus-remote-write
   # endpoint: Mimir/Thanos/Grafana Cloud). Optional — mode: off | external | managed | demo.
@@ -72,6 +93,12 @@ global:
   metrics:
     mode: "off"
     remoteWriteUrl: http://victoriametrics:8428/api/v1/write
+    # Remote-write auth for a protected endpoint. type: bearer | basic.
+    #   bearer → existingSecret key `token`; basic → keys `username` + `password`.
+    # Blank type = no auth (default).
+    auth:
+      type: ""
+      existingSecret: ""
   # Grafana (dashboards). Optional — mode: off | external | managed | demo.
   #   off      - render nothing (default).
   #   external - emit dashboard/datasource artifacts for your existing Grafana.
@@ -243,6 +270,8 @@ daemons:
     enabled: false
     usesDatabase: false
     usesKafka: false
+    # Receives global.metrics.auth (bearer/basic via secretKeyRef) when configured.
+    metricsRemoteWrite: true
     extraEnv:
       SPRING_KAFKA_BOOTSTRAP_SERVERS: '{{ include "deltav.kafkaBootstrap" . }}'
       PROMETHEUS_WRITER_REMOTE_WRITE_URL: '{{ include "deltav.metricsRemoteWriteUrl" . }}'
