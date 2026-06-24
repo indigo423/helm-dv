@@ -70,6 +70,53 @@ default. `global.postgres.passwordKey` must be `password` in `managed`/`demo`
 > OpenNMS installer `-Q` version-gate and PL/pgSQL IPLIKE) and CloudNativePG
 > backups / PITR (Barman Cloud Plugin + cert-manager) are planned follow-ups.
 
+## Other backing services (Kafka, ClickHouse, metrics, Grafana)
+
+Every backing service is selected by a `mode` enum, mirroring `global.postgres.mode`.
+**Kafka** is required (default `external`); **ClickHouse**, **metrics** and **Grafana**
+are optional (default `off` — render/wire nothing). `managed` is reserved for the
+operator implementations (Strimzi/Altinity/VictoriaMetrics/Grafana) and currently
+fails fast with a directive. With no auth/TLS configured, `external` renders
+byte-identical to prior releases.
+
+| Service | Key | Bring-your-own (`external`) | Auth secret |
+|---|---|---|---|
+| Kafka | `global.kafka.mode` | `global.kafka.bootstrapServers` | SASL via `global.kafka.security` (see below) |
+| ClickHouse | `global.clickhouse.mode` | `global.clickhouse.host` (+ `auth.username`) | `global.clickhouse.auth.existingSecret` (key `password`) |
+| metrics | `global.metrics.mode` | `global.metrics.remoteWriteUrl` (any Prometheus remote-write target) | `global.metrics.auth` (`type: bearer\|basic` + `existingSecret`) |
+| Grafana | `global.grafana.mode` | *(artifact emission — planned)* | — |
+
+**Authenticated Kafka (SASL + TLS).** For a shared broker (MSK, Confluent Cloud,
+Aiven, Strimzi-with-SCRAM): set the non-secret protocol/mechanism, and supply the
+credential as a JAAS file in a Secret (it is mounted and referenced JVM-wide — it
+never lands in the pod spec or `-D`). TLS uses **PEM** (a `kubernetes.io/tls` Secret,
+cert-manager's shape) — no truststore password.
+
+```bash
+# SASL credential: the full sasl.jaas.config line under key jaas.conf
+kubectl create secret generic kafka-creds \
+  --from-literal=jaas.conf='org.apache.kafka.common.security.scram.ScramLoginModule required username="dv" password="…";'
+
+helm install deltav oci://ghcr.io/indigo423/helm-dv/deltav \
+  --set global.kafka.bootstrapServers=broker.example:9093 \
+  --set global.kafka.security.protocol=SASL_SSL \
+  --set global.kafka.security.saslMechanism=SCRAM-SHA-512 \
+  --set global.kafka.security.existingSecret=kafka-creds \
+  --set global.kafka.tls.existingSecret=kafka-tls    # kubernetes.io/tls (ca.crt[, tls.crt/tls.key + tls.mutual=true for mTLS])
+```
+
+**ClickHouse** (`external` = schema-only; the flow→ClickHouse writer is out-of-chart):
+`--set global.clickhouse.mode=external --set global.clickhouse.host=ch.example
+--set global.clickhouse.auth.existingSecret=ch-creds`. TLS: set
+`global.clickhouse.tls.existingSecret` (a CA bundle under `ca.crt`) — the chart mounts
+a secure `clickhouse-client` config (native port 9440).
+
+**Metrics** remote-write auth: `--set global.metrics.mode=external
+--set global.metrics.remoteWriteUrl=https://vm.example/api/v1/write
+--set global.metrics.auth.type=bearer --set global.metrics.auth.existingSecret=vm-token`
+(bearer → key `token`; basic → keys `username`/`password`). Enable the pusher with
+`daemons.prometheus-writer.enabled=true`.
+
 ## Install
 
 ### Production (external/operator-managed backing services)

@@ -35,13 +35,17 @@ selected by **`global.postgres.mode`**:
 The chart provisions **no** datastores — your daemons connect to your existing
 services. This is the default mode; each service is pointed at independently:
 
-| Service | Point at your own with | Default |
-|---|---|---|
-| **PostgreSQL** | `global.postgres.host`, `.database`, `.username`, `.existingSecret` | `mode: external` |
-| **Kafka** | `global.kafka.bootstrapServers` | `kafka:9092` |
-| **ClickHouse** (flow schema) | `clickhouse.external=true`, `clickhouse.host`, `clickhouse.auth.username/password` — runs the `clickhouse-init` DDL (the flow→ClickHouse consumer is out-of-chart, see note) | `clickhouse-init` off |
-| **VictoriaMetrics** (metrics) | keep `victoriametrics.enabled=false`; enable `daemons.prometheus-writer` and set its `PROMETHEUS_WRITER_REMOTE_WRITE_URL` to your VM remote-write endpoint | subchart off |
-| **Grafana** (dashboards) | keep `grafana.enabled=false`; run your own Grafana and add your metrics store as a datasource | subchart off |
+Each service has a `mode` enum mirroring `global.postgres.mode`. Kafka is required
+(default `external`); ClickHouse / metrics / Grafana are optional (default `off`).
+Auth/TLS is opt-in via `existingSecret` — never plaintext.
+
+| Service | Point at your own with | Auth secret | Default |
+|---|---|---|---|
+| **PostgreSQL** | `global.postgres.host`, `.database`, `.username` | `.existingSecret` (key `password`) | `mode: external` |
+| **Kafka** | `global.kafka.bootstrapServers` | SASL: `global.kafka.security.{protocol,saslMechanism,existingSecret}` (Secret key `jaas.conf`); TLS: `global.kafka.tls.existingSecret` (`kubernetes.io/tls`) | `mode: external`, plaintext |
+| **ClickHouse** (flow schema) | `global.clickhouse.mode=external`, `global.clickhouse.host`, `.auth.username` — runs the `clickhouse-init` DDL (the flow→ClickHouse consumer is out-of-chart, see note) | `.auth.existingSecret` (key `password`); TLS `.tls.existingSecret` (key `ca.crt`) | `mode: off` |
+| **metrics** (VictoriaMetrics / any remote-write) | `global.metrics.mode=external`, `global.metrics.remoteWriteUrl`; enable `daemons.prometheus-writer` | `global.metrics.auth.{type,existingSecret}` (`bearer`→`token`; `basic`→`username`/`password`) | `mode: off` |
+| **Grafana** (dashboards) | `global.grafana.mode` *(external artifact emission — planned)*; for now run your own Grafana and add your metrics store as a datasource | — | `mode: off` |
 
 **1. Create a Secret with the DB password** (key `password`):
 
@@ -61,21 +65,28 @@ helm install deltav deltav/deltav \
   --set global.postgres.username=opennms \
   --set global.postgres.existingSecret=deltav-db \
   --set global.kafka.bootstrapServers=my-kafka-bootstrap:9092 \
-  --set clickhouse.external=true \
-  --set clickhouse.host=my-clickhouse.svc \
-  --set clickhouse.auth.username=deltav \
-  --set-string clickhouse.auth.password='<clickhouse-password>' \
-  --set daemons.prometheus-writer.enabled=true \
-  --set-string daemons.prometheus-writer.extraEnv.PROMETHEUS_WRITER_REMOTE_WRITE_URL=http://my-victoriametrics:8428/api/v1/write
+  --set global.clickhouse.mode=external \
+  --set global.clickhouse.host=my-clickhouse.svc \
+  --set global.clickhouse.auth.username=deltav \
+  --set global.clickhouse.auth.existingSecret=deltav-clickhouse \
+  --set global.metrics.mode=external \
+  --set global.metrics.remoteWriteUrl=http://my-victoriametrics:8428/api/v1/write \
+  --set daemons.prometheus-writer.enabled=true
 ```
 
-> `global.postgres.mode` defaults to `external`. The **Grafana** and
-> **VictoriaMetrics** subcharts stay off (`grafana.enabled=false`,
-> `victoriametrics.enabled=false`) — bring your own and point Grafana's datasource
-> at your metrics store. The `db-init` schema migration runs as a `pre-install`
-> hook against your Postgres.
+> `global.postgres.mode` defaults to `external`; ClickHouse/metrics/Grafana default
+> to `off` until you opt in. The **Grafana** and **VictoriaMetrics** demo subcharts
+> stay off — bring your own and point Grafana's datasource at your metrics store.
+> The `db-init` schema migration runs as a `pre-install` hook against your Postgres.
 >
-> **ClickHouse is schema-only here:** `clickhouse.external=true` runs the
+> **Authenticated services:** point an `existingSecret` at each — Kafka SASL
+> (`global.kafka.security.existingSecret`, key `jaas.conf`) + TLS
+> (`global.kafka.tls.existingSecret`, a `kubernetes.io/tls` Secret), ClickHouse
+> (`global.clickhouse.auth.existingSecret`, key `password`), and metrics remote-write
+> (`global.metrics.auth.{type,existingSecret}`). Credentials are mounted/`secretKeyRef`'d
+> — never written into the pod spec.
+>
+> **ClickHouse is schema-only here:** `global.clickhouse.mode=external` runs the
 > `clickhouse-init` DDL against your ClickHouse, and the `flow-enricher` daemon
 > (on by default) publishes enriched flows to the Kafka topic `deltav-flows`. The
 > consumer that *writes* those flows into ClickHouse is **not** part of this chart
