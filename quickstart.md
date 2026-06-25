@@ -47,16 +47,23 @@ Auth/TLS is opt-in via `existingSecret` — never plaintext.
 | **metrics** (VictoriaMetrics / any remote-write) | `global.metrics.mode=external`, `global.metrics.remoteWriteUrl`; enable `daemons.prometheus-writer` | `global.metrics.auth.{type,existingSecret}` (`bearer`→`token`; `basic`→`username`/`password`) | `mode: off` |
 | **Grafana** (dashboards) | `global.grafana.mode` *(external artifact emission — planned)*; for now run your own Grafana and add your metrics store as a datasource | — | `mode: off` |
 
-**1. Create a Secret with the DB password** (key `password`):
+**1. Create a Secret for each authenticated service.** The DB password (key
+`password`) is the minimum; create the ClickHouse / metrics / Kafka secrets too
+**only if** you reference them below (the chart fails to start a pod whose
+`existingSecret` does not exist):
 
 ```bash
 kubectl create secret generic deltav-db \
   --from-literal=password='<your-postgres-password>'
+
+# Only if you point at an authenticated ClickHouse (matches existingSecret below):
+kubectl create secret generic deltav-clickhouse \
+  --from-literal=password='<your-clickhouse-password>'
 ```
 
 **2. Install, pointing at your services.** PostgreSQL + Kafka are the minimum; add
-the ClickHouse / VictoriaMetrics lines only if you run those services (omit them
-otherwise — this is one command):
+the ClickHouse / metrics lines only if you run those services (omit them otherwise
+— this is one command):
 
 ```bash
 helm install deltav deltav/deltav \
@@ -80,11 +87,13 @@ helm install deltav deltav/deltav \
 > The `db-init` schema migration runs as a `pre-install` hook against your Postgres.
 >
 > **Authenticated services:** point an `existingSecret` at each — Kafka SASL
-> (`global.kafka.security.existingSecret`, key `jaas.conf`) + TLS
-> (`global.kafka.tls.existingSecret`, a `kubernetes.io/tls` Secret), ClickHouse
-> (`global.clickhouse.auth.existingSecret`, key `password`), and metrics remote-write
-> (`global.metrics.auth.{type,existingSecret}`). Credentials are mounted/`secretKeyRef`'d
-> — never written into the pod spec.
+> (`global.kafka.security.existingSecret`, key `jaas.conf`, **with
+> `global.kafka.security.protocol`** e.g. `SASL_SSL` — the chart fails fast if the
+> secret is set without a protocol) + TLS (`global.kafka.tls.existingSecret`, a
+> `kubernetes.io/tls` Secret), ClickHouse (`global.clickhouse.auth.existingSecret`,
+> key `password`), and metrics remote-write (`global.metrics.auth.{type,existingSecret}`,
+> `type` ∈ `bearer|basic`). Credentials are mounted/`secretKeyRef`'d — never written
+> into the pod spec.
 >
 > **ClickHouse is schema-only here:** `global.clickhouse.mode=external` runs the
 > `clickhouse-init` DDL against your ClickHouse, and the `flow-enricher` daemon
