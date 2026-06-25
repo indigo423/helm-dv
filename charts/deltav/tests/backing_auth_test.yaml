@@ -1,0 +1,157 @@
+suite: external auth (kafka SASL/TLS, clickhouse, metrics)
+release:
+  name: deltav
+  namespace: default
+tests:
+  - it: kafka SASL injects per-namespace -D and a JVM JAAS file, never an inline credential
+    templates:
+      - templates/daemons.yaml
+    documentSelector:
+      path: spec.template.spec.containers[0].name
+      value: pollerd
+    set:
+      global:
+        kafka:
+          security: { protocol: SASL_SSL, saslMechanism: SCRAM-SHA-512, existingSecret: kafka-creds }
+    asserts:
+      - matchRegex:
+          path: spec.template.spec.containers[0].env[?(@.name=="JAVA_OPTS")].value
+          pattern: -Dorg\.opennms\.core\.ipc\.sink\.kafka\.security\.protocol=SASL_SSL
+      - matchRegex:
+          path: spec.template.spec.containers[0].env[?(@.name=="JAVA_OPTS")].value
+          pattern: -Dorg\.opennms\.core\.ipc\.twin\.kafka\.sasl\.mechanism=SCRAM-SHA-512
+      - matchRegex:
+          path: spec.template.spec.containers[0].env[?(@.name=="JAVA_OPTS")].value
+          pattern: -Djava\.security\.auth\.login\.config=/etc/deltav/kafka/jaas/jaas\.conf
+      # the credential never appears inline (would leak in the pod spec)
+      - notMatchRegex:
+          path: spec.template.spec.containers[0].env[?(@.name=="JAVA_OPTS")].value
+          pattern: sasl\.jaas\.config
+      - equal:
+          path: spec.template.spec.volumes[?(@.name=="kafka-jaas")].secret.secretName
+          value: kafka-creds
+
+  - it: kafka TLS mounts a PEM truststore secret and sets PEM type (no truststore password)
+    templates:
+      - templates/daemons.yaml
+    documentSelector:
+      path: spec.template.spec.containers[0].name
+      value: pollerd
+    set:
+      global:
+        kafka:
+          tls: { existingSecret: kafka-tls }
+    asserts:
+      - matchRegex:
+          path: spec.template.spec.containers[0].env[?(@.name=="JAVA_OPTS")].value
+          pattern: ssl\.truststore\.type=PEM
+      - equal:
+          path: spec.template.spec.volumes[?(@.name=="kafka-tls")].secret.secretName
+          value: kafka-tls
+      - notMatchRegex:
+          path: spec.template.spec.containers[0].env[?(@.name=="JAVA_OPTS")].value
+          pattern: truststore\.password
+
+  - it: kafka security reaches Spring-only kafka daemons (alarms-materializer via SPRING_KAFKA_*)
+    templates:
+      - templates/daemons.yaml
+    documentSelector:
+      path: spec.template.spec.containers[0].name
+      value: alarms-materializer
+    set:
+      global:
+        kafka:
+          security: { protocol: SASL_SSL, saslMechanism: SCRAM-SHA-512, existingSecret: kafka-creds }
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].env[?(@.name=="SPRING_KAFKA_PROPERTIES_SECURITY_PROTOCOL")].value
+          value: SASL_SSL
+      - equal:
+          path: spec.template.spec.volumes[?(@.name=="kafka-jaas")].secret.secretName
+          value: kafka-creds
+
+  - it: clickhouse password comes from a secret when existingSecret is set
+    templates:
+      - templates/hooks/clickhouse-init-job.yaml
+    set:
+      global:
+        clickhouse: { mode: external, auth: { existingSecret: ch-creds } }
+    documentSelector:
+      path: kind
+      value: Job
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].env[?(@.name=="CLICKHOUSE_PASSWORD")].valueFrom.secretKeyRef.name
+          value: ch-creds
+
+  - it: clickhouse TLS renders a secure client config and mounts the CA
+    templates:
+      - templates/hooks/clickhouse-init-job.yaml
+    set:
+      global:
+        clickhouse: { mode: external, tls: { existingSecret: ch-ca } }
+    asserts:
+      - documentSelector: { path: kind, value: ConfigMap }
+        matchRegex:
+          path: data["config.xml"]
+          pattern: <secure>1</secure>
+      - documentSelector: { path: kind, value: Job }
+        equal:
+          path: spec.template.spec.volumes[?(@.name=="clickhouse-ca")].secret.secretName
+          value: ch-ca
+
+  - it: metrics basic auth injects user/pass env from a secret on prometheus-writer
+    templates:
+      - templates/daemons.yaml
+    documentSelector:
+      path: spec.template.spec.containers[0].name
+      value: prometheus-writer
+    set:
+      daemons:
+        prometheus-writer: { enabled: true }
+      global:
+        metrics:
+          mode: external
+          auth: { type: basic, existingSecret: vm-basic }
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].env[?(@.name=="PROMETHEUS_WRITER_AUTH_TYPE")].value
+          value: basic
+      - equal:
+          path: spec.template.spec.containers[0].env[?(@.name=="PROMETHEUS_WRITER_BASIC_PASS")].valueFrom.secretKeyRef.name
+          value: vm-basic
+
+  - it: minion-gateway receives kafka auth (JAAS file + spring env + mounts)
+    templates:
+      - templates/minion-gateway.yaml
+    documentSelector:
+      path: kind
+      value: Deployment
+    set:
+      global:
+        kafka:
+          security: { protocol: SASL_SSL, saslMechanism: SCRAM-SHA-512, existingSecret: kafka-creds }
+          tls: { existingSecret: kafka-tls }
+    asserts:
+      - matchRegex:
+          path: spec.template.spec.containers[0].env[?(@.name=="JAVA_OPTS")].value
+          pattern: -Djava\.security\.auth\.login\.config=/etc/deltav/kafka/jaas/jaas\.conf
+      - equal:
+          path: spec.template.spec.containers[0].env[?(@.name=="SPRING_KAFKA_PROPERTIES_SECURITY_PROTOCOL")].value
+          value: SASL_SSL
+      - equal:
+          path: spec.template.spec.volumes[?(@.name=="kafka-jaas")].secret.secretName
+          value: kafka-creds
+
+  - it: minion-gateway is unchanged when no kafka auth is configured
+    templates:
+      - templates/minion-gateway.yaml
+    documentSelector:
+      path: kind
+      value: Deployment
+    asserts:
+      - notExists:
+          path: spec.template.spec.volumes
+      - equal:
+          path: spec.template.spec.containers[0].env[?(@.name=="JAVA_OPTS")].value
+          value: "-Xms256m -Xmx512m"

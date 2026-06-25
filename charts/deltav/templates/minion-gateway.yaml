@@ -4,6 +4,7 @@ inbound surface. Always part of the release.
 */}}
 {{- if .Values.minionGateway.enabled }}
 {{- $mg := .Values.minionGateway }}
+{{- $kafkaSec := eq (include "deltav.kafkaSecurityActive" .) "true" }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -39,8 +40,13 @@ spec:
           env:
             - name: KAFKA_BOOTSTRAP_SERVERS
               value: {{ include "deltav.kafkaBootstrap" . | quote }}
+            {{- $javaOpts := $mg.javaOpts | default "-Xms256m -Xmx512m" }}
+            {{- if $kafkaSec }}{{ $javaOpts = printf "%s %s" $javaOpts (include "deltav.kafkaSecurityJavaOpts" .) | trim }}{{ end }}
             - name: JAVA_OPTS
-              value: {{ $mg.javaOpts | default "-Xms256m -Xmx512m" | quote }}
+              value: {{ $javaOpts | quote }}
+            {{- if $kafkaSec }}
+            {{- include "deltav.kafkaSecurityEnv" . | nindent 12 }}
+            {{- end }}
           readinessProbe:
             httpGet:
               path: /actuator/health
@@ -59,6 +65,14 @@ spec:
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
+          {{- if $kafkaSec }}
+          volumeMounts:
+            {{- include "deltav.kafkaSecurityVolumeMounts" . | nindent 12 }}
+          {{- end }}
+      {{- if $kafkaSec }}
+      volumes:
+        {{- include "deltav.kafkaSecurityVolumes" . | nindent 8 }}
+      {{- end }}
 ---
 apiVersion: v1
 kind: Service

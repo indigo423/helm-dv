@@ -18,6 +18,12 @@ and every extraEnv value are run through `tpl`, so host-bearing references like
 {{- $usesDb := ne $d.usesDatabase false -}}
 {{- $usesKafka := ne $d.usesKafka false -}}
 {{- $port := int ($d.port | default 8080) -}}
+{{/* "talks to kafka" = IPC daemons ($usesKafka) OR Spring-kafka daemons (SPRING_KAFKA_BOOTSTRAP_SERVERS). */}}
+{{- $talksKafka := or $usesKafka (and $d.extraEnv (hasKey $d.extraEnv "SPRING_KAFKA_BOOTSTRAP_SERVERS")) -}}
+{{- $kafkaSec := and $talksKafka (eq (include "deltav.kafkaSecurityActive" $root) "true") -}}
+{{- $kafkaTls := and $talksKafka (($root.Values.global.kafka.tls | default dict).existingSecret | default "" | ne "") -}}
+{{- $kafkaJaas := and $talksKafka (($root.Values.global.kafka.security | default dict).existingSecret | default "" | ne "") -}}
+{{- $metricsAuth := and $d.metricsRemoteWrite (eq (include "deltav.metricsAuthActive" $root) "true") -}}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -101,13 +107,22 @@ spec:
             - name: OPENNMS_TSID_NODE_ID
               value: {{ $d.tsidNodeId | quote }}
             {{- end }}
-            {{- if $d.javaOpts }}
+            {{- $javaOpts := "" }}
+            {{- if $d.javaOpts }}{{ $javaOpts = tpl $d.javaOpts $root }}{{ end }}
+            {{- if $kafkaSec }}{{ $javaOpts = printf "%s %s" $javaOpts (include "deltav.kafkaSecurityJavaOpts" $root) | trim }}{{ end }}
+            {{- if $javaOpts }}
             - name: JAVA_OPTS
-              value: {{ tpl $d.javaOpts $root | quote }}
+              value: {{ $javaOpts | quote }}
             {{- end }}
             {{- if $usesKafka }}
             - name: {{ $d.kafkaEnvVar | default "KAFKA_BOOTSTRAP_SERVERS" }}
               value: {{ include "deltav.kafkaBootstrap" $root | quote }}
+            {{- end }}
+            {{- if $kafkaSec }}
+            {{- include "deltav.kafkaSecurityEnv" $root | nindent 12 }}
+            {{- end }}
+            {{- if $metricsAuth }}
+            {{- include "deltav.metricsAuthEnv" $root | nindent 12 }}
             {{- end }}
             {{- if $d.consumerGroup }}
             - name: KAFKA_CONSUMER_GROUP
@@ -152,19 +167,43 @@ spec:
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-          {{- if and $d.seed $d.seed.enabled }}
+          {{- if or (and $d.seed $d.seed.enabled) $kafkaTls $kafkaJaas }}
           volumeMounts:
+            {{- if and $d.seed $d.seed.enabled }}
             - name: imports
               mountPath: {{ $d.seed.mountPath | default "/opt/deltav/etc/imports" }}
+            {{- end }}
+            {{- if $kafkaTls }}
+            - name: kafka-tls
+              mountPath: /etc/deltav/kafka/tls
+              readOnly: true
+            {{- end }}
+            {{- if $kafkaJaas }}
+            - name: kafka-jaas
+              mountPath: /etc/deltav/kafka/jaas
+              readOnly: true
+            {{- end }}
           {{- end }}
       {{- if $d.stopGracePeriodSeconds }}
       terminationGracePeriodSeconds: {{ $d.stopGracePeriodSeconds }}
       {{- end }}
-      {{- if and $d.seed $d.seed.enabled }}
+      {{- if or (and $d.seed $d.seed.enabled) $kafkaTls $kafkaJaas }}
       volumes:
+        {{- if and $d.seed $d.seed.enabled }}
         - name: imports
           persistentVolumeClaim:
             claimName: {{ $fullname }}-imports
+        {{- end }}
+        {{- if $kafkaTls }}
+        - name: kafka-tls
+          secret:
+            secretName: {{ ($root.Values.global.kafka.tls).existingSecret }}
+        {{- end }}
+        {{- if $kafkaJaas }}
+        - name: kafka-jaas
+          secret:
+            secretName: {{ ($root.Values.global.kafka.security).existingSecret }}
+        {{- end }}
       {{- end }}
 ---
 apiVersion: v1

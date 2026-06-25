@@ -17,9 +17,30 @@ global:
   imagePullSecrets: []
   instanceId: DeltaV
   kafka:
+    # Backing-service mode: external | managed | demo (Kafka is required).
+    #   external - chart provisions nothing; daemons wire to bootstrapServers (default).
+    #   managed  - Strimzi-provisioned cluster (reserved; not yet implemented).
+    #   demo     - first-party single-node broker (demoBackingServices).
+    mode: external
     # Bootstrap servers for all daemons. Blank-safe default matches the compose
     # hostname so the bundled Kafka subchart (fullnameOverride: kafka) just works.
     bootstrapServers: "kafka:9092"
+    # SASL auth for an authenticated external broker (Confluent Cloud, MSK, Aiven,
+    # Strimzi-with-SCRAM). Leave protocol blank for plaintext (default; no change).
+    # The credential travels as a mounted JAAS file (never -D/JAVA_OPTS), referenced
+    # JVM-wide; existingSecret MUST hold key `jaas.conf` with the full
+    # `sasl.jaas.config` login line. security.protocol/saslMechanism are non-secret.
+    security:
+      protocol: ""            # e.g. SASL_SSL | SASL_PLAINTEXT
+      saslMechanism: ""       # e.g. SCRAM-SHA-512 | PLAIN
+      existingSecret: ""      # Secret with key jaas.conf
+    # TLS via PEM (no truststore password). existingSecret is a kubernetes.io/tls
+    # Secret (ca.crt [+ tls.crt/tls.key for mTLS]) — cert-manager's shape. Blank =
+    # public-CA TLS via the JVM default trust store (or plaintext). Set mutual: true
+    # to also present the client cert/key (mTLS).
+    tls:
+      existingSecret: ""
+      mutual: false
   postgres:
     # Backing-service mode: external | managed | demo | demo-legacy.
     #   external    - chart provisions nothing; daemons wire to host + secret below (default).
@@ -41,6 +62,52 @@ global:
     # consumes it as the Cluster bootstrap secret and will mis-bootstrap an Opaque
     # or username-mismatched Secret.
     existingSecret: ""
+  # ClickHouse (flow schema). Optional service — mode: off | external | managed | demo.
+  #   off      - no ClickHouse; clickhouse-init skipped (default).
+  #   external - run clickhouse-init DDL against the host below (bring-your-own).
+  #   managed  - Altinity operator (reserved; not yet implemented).
+  # The flow→ClickHouse writer is out-of-chart; external mode is schema-only.
+  clickhouse:
+    # Blank = off, unless the deprecated top-level clickhouse.enabled/external is
+    # set (legacy shim → external). Set explicitly to off|external to override.
+    mode: ""
+    # Blank fields fall back to the documented default AND let the legacy top-level
+    # clickhouse.* keys win when only those are set (one-release shim).
+    host: ""                 # effective default: clickhouse
+    auth:
+      username: ""           # effective default: deltav
+      # Plaintext fallback; prefer auth.existingSecret (consumed via secretKeyRef,
+      # key `password`).
+      password: ""           # effective default: deltav
+      existingSecret: ""
+    # TLS to ClickHouse. existingSecret holds a CA bundle (key `ca.crt`); the chart
+    # mounts a clickhouse-client config.xml with <secure> referencing it (port 9440).
+    tls:
+      existingSecret: ""
+  # Metrics remote-write target (VictoriaMetrics or any Prometheus-remote-write
+  # endpoint: Mimir/Thanos/Grafana Cloud). Optional — mode: off | external | managed | demo.
+  #   off      - no remote-write target wired (default; prometheus-writer stays off).
+  #   external - daemons push to remoteWriteUrl below (bring-your-own).
+  #   demo     - bundled victoria-metrics-single subchart.
+  #   managed  - VictoriaMetrics Operator (reserved; not yet implemented).
+  metrics:
+    mode: "off"
+    remoteWriteUrl: http://victoriametrics:8428/api/v1/write
+    # Remote-write auth for a protected endpoint. type: bearer | basic.
+    #   bearer → existingSecret key `token`; basic → keys `username` + `password`.
+    # Blank type = no auth (default).
+    auth:
+      type: ""
+      existingSecret: ""
+  # Grafana (dashboards). Optional — mode: off | external | managed | demo.
+  #   off      - render nothing (default).
+  #   external - emit dashboard/datasource artifacts for your existing Grafana.
+  #   demo     - bundled grafana subchart.
+  #   managed  - Grafana Operator (reserved; not yet implemented).
+  grafana:
+    mode: "off"
+    # Datasource URL for emitted artifacts; blank → derived from global.metrics.
+    datasourceUrl: ""
 
 # Per-daemon Prometheus scraping via ServiceMonitor (requires Prometheus/VM
 # Operator CRDs). Replaces the compose vmagent scrape sidecar.
@@ -203,9 +270,11 @@ daemons:
     enabled: false
     usesDatabase: false
     usesKafka: false
+    # Receives global.metrics.auth (bearer/basic via secretKeyRef) when configured.
+    metricsRemoteWrite: true
     extraEnv:
       SPRING_KAFKA_BOOTSTRAP_SERVERS: '{{ include "deltav.kafkaBootstrap" . }}'
-      PROMETHEUS_WRITER_REMOTE_WRITE_URL: http://victoriametrics:8428/api/v1/write
+      PROMETHEUS_WRITER_REMOTE_WRITE_URL: '{{ include "deltav.metricsRemoteWriteUrl" . }}'
       JAVA_TOOL_OPTIONS: "-Xms128m -Xmx512m"
     probePath: /actuator/health/readiness
 
@@ -332,20 +401,18 @@ demoBackingServices:
   # Image used by the db-init wait-for-postgres initContainer (demo only).
   waitImage: busybox:1.37
 
-# ClickHouse: NOT bundled (Bitnami catalog deprecated). The clickhouse-init hook
-# runs only against an EXTERNAL ClickHouse — set clickhouse.external=true and the
-# connection details. Production flows pipelines supply their own ClickHouse.
-clickhouse:
-  enabled: false        # no bundled subchart anymore
-  external: false       # set true to run clickhouse-init against an external CH
-  host: clickhouse
-  auth:
-    username: deltav
-    password: deltav
+# ClickHouse config has MOVED to global.clickhouse (mode/host/auth). The former
+# top-level `clickhouse.{enabled,external,host,auth}` keys are DEPRECATED but still
+# honored for one release via a shim (global.clickhouse.mode wins; legacy
+# enabled/external map to mode external). Set global.clickhouse.mode instead.
 
 # ---------------------------------------------------------------------------
-# Remaining backing services as condition-gated subcharts (non-Bitnami). OFF
-# here; values-demo.yaml flips them on.
+# Demo subcharts (non-Bitnami), condition-gated by enabled. OFF here; flipped on
+# by values-demo.yaml. NOTE: Helm routes subchart values by dependency name/alias,
+# so these stay top-level (they cannot move under global.*). For the optional
+# services global.metrics.mode/global.grafana.mode are validation-only (Helm's
+# static `condition:` cannot evaluate mode == demo), so the demo preset leaves
+# them at their default and turns the subchart on via `enabled` below.
 # ---------------------------------------------------------------------------
 victoriametrics:
   enabled: false

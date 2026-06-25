@@ -1,9 +1,38 @@
 {{/*
-ClickHouse DDL bootstrap — Helm hook, gated on the flow store being present
-(either the bundled clickhouse subchart or an external one declared reachable
-via clickhouse.external). Skipped entirely when neither is in play.
+ClickHouse DDL bootstrap — Helm hook, gated on the ClickHouse mode being
+`external` (global.clickhouse.mode, with the legacy clickhouse.enabled/external
+shim). Skipped when the mode is `off`. `managed`/`demo` fail in the mode helper.
 */}}
-{{- if and .Values.initJobs.clickhouseInit.enabled (or .Values.clickhouse.enabled .Values.clickhouse.external) }}
+{{- if and .Values.initJobs.clickhouseInit.enabled (eq (include "deltav.clickhouse.mode" .) "external") }}
+{{- $ch := .Values.global.clickhouse | default dict }}
+{{- $chLegacy := .Values.clickhouse | default dict }}
+{{- $chSecret := dig "auth" "existingSecret" "" $ch }}
+{{- $chTls := dig "tls" "existingSecret" "" $ch }}
+{{- if $chTls }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "deltav.fullname" . }}-clickhouse-client-config
+  labels:
+    {{- include "deltav.labels" . | nindent 4 }}
+    app.kubernetes.io/component: clickhouse-init
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-6"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+data:
+  config.xml: |
+    <config>
+      <secure>1</secure>
+      <openSSL>
+        <client>
+          <caConfig>/etc/clickhouse-client/ca.crt</caConfig>
+          <verificationMode>strict</verificationMode>
+        </client>
+      </openSSL>
+    </config>
+---
+{{- end }}
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -34,13 +63,40 @@ spec:
           imagePullPolicy: {{ .Values.global.image.pullPolicy }}
           env:
             - name: CLICKHOUSE_HOST
-              value: {{ .Values.clickhouse.host | default "clickhouse" | quote }}
+              value: {{ include "deltav.clickhouseHost" . | quote }}
             - name: CLICKHOUSE_USER
-              value: {{ .Values.clickhouse.auth.username | default "deltav" | quote }}
+              value: {{ coalesce (dig "auth" "username" "" $ch) (dig "auth" "username" "" $chLegacy) "deltav" | quote }}
             - name: CLICKHOUSE_PASSWORD
-              value: {{ .Values.clickhouse.auth.password | default "deltav" | quote }}
+            {{- if $chSecret }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $chSecret }}
+                  key: password
+            {{- else }}
+              value: {{ coalesce (dig "auth" "password" "" $ch) (dig "auth" "password" "" $chLegacy) "deltav" | quote }}
+            {{- end }}
             - name: DELTAV_CLICKHOUSE_FLOWS_RAW_TTL_DAYS
               value: {{ .Values.initJobs.clickhouseInit.flowsRawTtlDays | quote }}
             - name: DELTAV_CLICKHOUSE_FLOWS_AGG_TTL_DAYS
               value: {{ .Values.initJobs.clickhouseInit.flowsAggTtlDays | quote }}
+          {{- if $chTls }}
+          volumeMounts:
+            - name: clickhouse-client-config
+              mountPath: /etc/clickhouse-client/config.xml
+              subPath: config.xml
+              readOnly: true
+            - name: clickhouse-ca
+              mountPath: /etc/clickhouse-client/ca.crt
+              subPath: ca.crt
+              readOnly: true
+          {{- end }}
+      {{- if $chTls }}
+      volumes:
+        - name: clickhouse-client-config
+          configMap:
+            name: {{ include "deltav.fullname" . }}-clickhouse-client-config
+        - name: clickhouse-ca
+          secret:
+            secretName: {{ $chTls }}
+      {{- end }}
 {{- end }}

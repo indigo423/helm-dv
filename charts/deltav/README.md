@@ -75,6 +75,53 @@ default. `global.postgres.passwordKey` must be `password` in `managed`/`demo`
 > OpenNMS installer `-Q` version-gate and PL/pgSQL IPLIKE) and CloudNativePG
 > backups / PITR (Barman Cloud Plugin + cert-manager) are planned follow-ups.
 
+## Other backing services (Kafka, ClickHouse, metrics, Grafana)
+
+Every backing service is selected by a `mode` enum, mirroring `global.postgres.mode`.
+**Kafka** is required (default `external`); **ClickHouse**, **metrics** and **Grafana**
+are optional (default `off` — render/wire nothing). `managed` is reserved for the
+operator implementations (Strimzi/Altinity/VictoriaMetrics/Grafana) and currently
+fails fast with a directive. With no auth/TLS configured, `external` renders
+byte-identical to prior releases.
+
+| Service | Key | Bring-your-own (`external`) | Auth secret |
+|---|---|---|---|
+| Kafka | `global.kafka.mode` | `global.kafka.bootstrapServers` | SASL via `global.kafka.security` (see below) |
+| ClickHouse | `global.clickhouse.mode` | `global.clickhouse.host` (+ `auth.username`) | `global.clickhouse.auth.existingSecret` (key `password`) |
+| metrics | `global.metrics.mode` | `global.metrics.remoteWriteUrl` (any Prometheus remote-write target) | `global.metrics.auth` (`type: bearer\|basic` + `existingSecret`) |
+| Grafana | `global.grafana.mode` | *(artifact emission — planned)* | — |
+
+**Authenticated Kafka (SASL + TLS).** For a shared broker (MSK, Confluent Cloud,
+Aiven, Strimzi-with-SCRAM): set the non-secret protocol/mechanism, and supply the
+credential as a JAAS file in a Secret (it is mounted and referenced JVM-wide — it
+never lands in the pod spec or `-D`). TLS uses **PEM** (a `kubernetes.io/tls` Secret,
+cert-manager's shape) — no truststore password.
+
+```bash
+# SASL credential: the full sasl.jaas.config line under key jaas.conf
+kubectl create secret generic kafka-creds \
+  --from-literal=jaas.conf='org.apache.kafka.common.security.scram.ScramLoginModule required username="dv" password="…";'
+
+helm install deltav oci://ghcr.io/indigo423/helm-dv/deltav \
+  --set global.kafka.bootstrapServers=broker.example:9093 \
+  --set global.kafka.security.protocol=SASL_SSL \
+  --set global.kafka.security.saslMechanism=SCRAM-SHA-512 \
+  --set global.kafka.security.existingSecret=kafka-creds \
+  --set global.kafka.tls.existingSecret=kafka-tls    # kubernetes.io/tls (ca.crt[, tls.crt/tls.key + tls.mutual=true for mTLS])
+```
+
+**ClickHouse** (`external` = schema-only; the flow→ClickHouse writer is out-of-chart):
+`--set global.clickhouse.mode=external --set global.clickhouse.host=ch.example
+--set global.clickhouse.auth.existingSecret=ch-creds`. TLS: set
+`global.clickhouse.tls.existingSecret` (a CA bundle under `ca.crt`) — the chart mounts
+a secure `clickhouse-client` config (native port 9440).
+
+**Metrics** remote-write auth: `--set global.metrics.mode=external
+--set global.metrics.remoteWriteUrl=https://vm.example/api/v1/write
+--set global.metrics.auth.type=bearer --set global.metrics.auth.existingSecret=vm-token`
+(bearer → key `token`; basic → keys `username`/`password`). Enable the pusher with
+`daemons.prometheus-writer.enabled=true`.
+
 ## Install
 
 ### Production (external/operator-managed backing services)
@@ -147,12 +194,7 @@ Kubernetes: `>=1.25.0-0`
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| clickhouse.auth.password | string | `"deltav"` |  |
-| clickhouse.auth.username | string | `"deltav"` |  |
-| clickhouse.enabled | bool | `false` |  |
-| clickhouse.external | bool | `false` |  |
-| clickhouse.host | string | `"clickhouse"` |  |
-| daemons | object | `{"alarmd":{"consumerGroup":"opennms-alarmd","enabled":true,"javaOpts":"-Xms512m -Xmx1g -XX:MaxMetaspaceSize=256m","tsidNodeId":23},"alarms-materializer":{"enabled":true,"extraEnv":{"DELTAV_ALARMS_STATE_TOPIC":"deltav-alarms-state-change","SPRING_KAFKA_BOOTSTRAP_SERVERS":"{{ include \"deltav.kafkaBootstrap\" . }}"},"usesKafka":false},"alerts-forwarder":{"enabled":false,"extraEnv":{"DELTAV_ALERTS_ALERTMANAGER_ENABLED":"false","DELTAV_ALERTS_ALERTMANAGER_URL":"","DELTAV_ALERTS_VM_ENABLED":"true","SPRING_KAFKA_BOOTSTRAP_SERVERS":"{{ include \"deltav.kafkaBootstrap\" . }}"},"probeInitialDelay":30,"usesDatabase":false,"usesKafka":false},"bsmd":{"consumerGroup":"opennms-bsmd","enabled":true,"javaOpts":"-Xms256m -Xmx512m -XX:MaxMetaspaceSize=256m -Dorg.opennms.alarms.snapshot.sync.ms=10000","tsidNodeId":17},"collectd":{"enabled":true,"extraEnv":{"DELTAV_TIMESERIES_ENABLED":"true","OPENNMS_TIMESERIES_STRATEGY":"inmemory"},"javaOpts":"-Xms512m -Xmx1g -Dorg.opennms.tsid.node-id=5","stopGracePeriodSeconds":60},"discovery":{"enabled":true,"extraEnv":{"INTERFACE_NODE_CACHE_REFRESH_MS":"15000","RPC_KAFKA_BOOTSTRAP_SERVERS":"{{ include \"deltav.kafkaBootstrap\" . }}","RPC_KAFKA_FORCE_REMOTE":"true"},"javaOpts":"-Xms256m -Xmx512m -XX:MaxMetaspaceSize=256m","stopGracePeriodSeconds":60,"tsidNodeId":24},"enlinkd":{"consumerGroup":"enlinkd","enabled":true,"extraEnv":{"OPENNMS_RPC_KAFKA_ENABLED":"true"},"javaOpts":"-Xms256m -Xmx512m -XX:MaxMetaspaceSize=256m -Dopennms.home=/opt/deltav","stopGracePeriodSeconds":60},"eventtranslator":{"consumerGroup":"opennms-eventtranslator","enabled":true,"javaOpts":"-Xms256m -Xmx512m -XX:MaxMetaspaceSize=256m","tsidNodeId":22},"flow-enricher":{"enabled":true,"extraEnv":{"DELTAV_FLOWS_DNS_ENABLED":"true","DELTAV_FLOWS_DNS_SCOPE":"all","DELTAV_FLOWS_OUTPUT_TOPIC":"deltav-flows","DELTAV_FLOWS_SINK_TOPICS":"DeltaV.Sink.Telemetry-Netflow-5,DeltaV.Sink.Telemetry-Netflow-9,DeltaV.Sink.Telemetry-IPFIX,DeltaV.Sink.Telemetry-SFlow"},"javaOpts":"-Xms256m -Xmx512m -XX:MaxMetaspaceSize=256m","probeInitialDelay":30},"perspectivepollerd":{"consumerGroup":"opennms-perspectivepollerd","enabled":true,"extraEnv":{"DELTAV_PERSPECTIVE_TIMESERIES_ENABLED":"true","OPENNMS_RPC_KAFKA_BOOTSTRAP_SERVERS":"{{ include \"deltav.kafkaBootstrap\" . }}","OPENNMS_RPC_KAFKA_ENABLED":"true"},"javaOpts":"-Xms512m -Xmx1g -XX:MaxMetaspaceSize=256m -Dorg.opennms.core.ipc.rpc.force-remote=true","tsidNodeId":7},"pollerd":{"consumerGroup":"opennms-pollerd","enabled":true,"extraEnv":{"DELTAV_TIMESERIES_ENABLED":"true","OPENNMS_RPC_KAFKA_BOOTSTRAP_SERVERS":"{{ include \"deltav.kafkaBootstrap\" . }}","OPENNMS_RPC_KAFKA_ENABLED":"true"},"javaOpts":"-Xms512m -Xmx1g -XX:MaxMetaspaceSize=256m -Dorg.opennms.core.ipc.twin.kafka.bootstrap.servers={{ include \"deltav.kafkaBootstrap\" . }} -Dorg.opennms.core.ipc.rpc.force-remote=true","tsidNodeId":4},"prometheus-writer":{"enabled":false,"extraEnv":{"JAVA_TOOL_OPTIONS":"-Xms128m -Xmx512m","PROMETHEUS_WRITER_REMOTE_WRITE_URL":"http://victoriametrics:8428/api/v1/write","SPRING_KAFKA_BOOTSTRAP_SERVERS":"{{ include \"deltav.kafkaBootstrap\" . }}"},"probePath":"/actuator/health/readiness","usesDatabase":false,"usesKafka":false},"provisiond":{"enabled":true,"extraEnv":{"RPC_KAFKA_BOOTSTRAP_SERVERS":"{{ include \"deltav.kafkaBootstrap\" . }}","RPC_KAFKA_ENABLED":"true","RPC_KAFKA_FORCE_REMOTE":"true"},"hostAliases":[{"hostnames":["mhuot-lab-2"],"ip":"172.20.20.2"},{"hostnames":["mhuot-lab-3"],"ip":"172.20.20.3"},{"hostnames":["mhuot-lab-4"],"ip":"172.20.20.4"},{"hostnames":["mhuot-lab-5"],"ip":"172.20.20.5"},{"hostnames":["mhuot-lab-6"],"ip":"172.20.20.6"}],"javaOpts":"-Xms512m -Xmx1g -XX:MaxMetaspaceSize=256m","probeInitialDelay":60,"seed":{"enabled":true,"image":"provisiond-imports-init","mountPath":"/opt/deltav/etc/imports","size":"1Gi"},"stopGracePeriodSeconds":60,"tsidNodeId":25},"syslogd":{"consumerGroup":"opennms-syslogd","enabled":true,"extraEnv":{"INTERFACE_NODE_CACHE_REFRESH_MS":"15000"},"javaOpts":"-Xms256m -Xmx512m -XX:MaxMetaspaceSize=256m","sinkConsumerGroup":"opennms-syslogd-sink","tsidNodeId":21},"telemetryd":{"consumerGroup":"opennms-telemetryd","enabled":true,"javaOpts":"-Xms256m -Xmx512m -XX:MaxMetaspaceSize=256m -Dorg.opennms.core.ipc.sink.kafka.bootstrap.servers={{ include \"deltav.kafkaBootstrap\" . }} -Dorg.opennms.core.ipc.sink.kafka.group.id=opennms-telemetryd-sink -Dorg.opennms.core.ipc.twin.kafka.bootstrap.servers={{ include \"deltav.kafkaBootstrap\" . }}","tsidNodeId":18},"trapd":{"consumerGroup":"opennms-trapd","enabled":true,"extraEnv":{"INTERFACE_NODE_CACHE_REFRESH_MS":"15000"},"javaOpts":"-Xms256m -Xmx512m -XX:MaxMetaspaceSize=256m","sinkConsumerGroup":"opennms-trapd-sink","tsidNodeId":20}}` | ------------------------------------------------------------------------- |
+| daemons | object | `{"alarmd":{"consumerGroup":"opennms-alarmd","enabled":true,"javaOpts":"-Xms512m -Xmx1g -XX:MaxMetaspaceSize=256m","tsidNodeId":23},"alarms-materializer":{"enabled":true,"extraEnv":{"DELTAV_ALARMS_STATE_TOPIC":"deltav-alarms-state-change","SPRING_KAFKA_BOOTSTRAP_SERVERS":"{{ include \"deltav.kafkaBootstrap\" . }}"},"usesKafka":false},"alerts-forwarder":{"enabled":false,"extraEnv":{"DELTAV_ALERTS_ALERTMANAGER_ENABLED":"false","DELTAV_ALERTS_ALERTMANAGER_URL":"","DELTAV_ALERTS_VM_ENABLED":"true","SPRING_KAFKA_BOOTSTRAP_SERVERS":"{{ include \"deltav.kafkaBootstrap\" . }}"},"probeInitialDelay":30,"usesDatabase":false,"usesKafka":false},"bsmd":{"consumerGroup":"opennms-bsmd","enabled":true,"javaOpts":"-Xms256m -Xmx512m -XX:MaxMetaspaceSize=256m -Dorg.opennms.alarms.snapshot.sync.ms=10000","tsidNodeId":17},"collectd":{"enabled":true,"extraEnv":{"DELTAV_TIMESERIES_ENABLED":"true","OPENNMS_TIMESERIES_STRATEGY":"inmemory"},"javaOpts":"-Xms512m -Xmx1g -Dorg.opennms.tsid.node-id=5","stopGracePeriodSeconds":60},"discovery":{"enabled":true,"extraEnv":{"INTERFACE_NODE_CACHE_REFRESH_MS":"15000","RPC_KAFKA_BOOTSTRAP_SERVERS":"{{ include \"deltav.kafkaBootstrap\" . }}","RPC_KAFKA_FORCE_REMOTE":"true"},"javaOpts":"-Xms256m -Xmx512m -XX:MaxMetaspaceSize=256m","stopGracePeriodSeconds":60,"tsidNodeId":24},"enlinkd":{"consumerGroup":"enlinkd","enabled":true,"extraEnv":{"OPENNMS_RPC_KAFKA_ENABLED":"true"},"javaOpts":"-Xms256m -Xmx512m -XX:MaxMetaspaceSize=256m -Dopennms.home=/opt/deltav","stopGracePeriodSeconds":60},"eventtranslator":{"consumerGroup":"opennms-eventtranslator","enabled":true,"javaOpts":"-Xms256m -Xmx512m -XX:MaxMetaspaceSize=256m","tsidNodeId":22},"flow-enricher":{"enabled":true,"extraEnv":{"DELTAV_FLOWS_DNS_ENABLED":"true","DELTAV_FLOWS_DNS_SCOPE":"all","DELTAV_FLOWS_OUTPUT_TOPIC":"deltav-flows","DELTAV_FLOWS_SINK_TOPICS":"DeltaV.Sink.Telemetry-Netflow-5,DeltaV.Sink.Telemetry-Netflow-9,DeltaV.Sink.Telemetry-IPFIX,DeltaV.Sink.Telemetry-SFlow"},"javaOpts":"-Xms256m -Xmx512m -XX:MaxMetaspaceSize=256m","probeInitialDelay":30},"perspectivepollerd":{"consumerGroup":"opennms-perspectivepollerd","enabled":true,"extraEnv":{"DELTAV_PERSPECTIVE_TIMESERIES_ENABLED":"true","OPENNMS_RPC_KAFKA_BOOTSTRAP_SERVERS":"{{ include \"deltav.kafkaBootstrap\" . }}","OPENNMS_RPC_KAFKA_ENABLED":"true"},"javaOpts":"-Xms512m -Xmx1g -XX:MaxMetaspaceSize=256m -Dorg.opennms.core.ipc.rpc.force-remote=true","tsidNodeId":7},"pollerd":{"consumerGroup":"opennms-pollerd","enabled":true,"extraEnv":{"DELTAV_TIMESERIES_ENABLED":"true","OPENNMS_RPC_KAFKA_BOOTSTRAP_SERVERS":"{{ include \"deltav.kafkaBootstrap\" . }}","OPENNMS_RPC_KAFKA_ENABLED":"true"},"javaOpts":"-Xms512m -Xmx1g -XX:MaxMetaspaceSize=256m -Dorg.opennms.core.ipc.twin.kafka.bootstrap.servers={{ include \"deltav.kafkaBootstrap\" . }} -Dorg.opennms.core.ipc.rpc.force-remote=true","tsidNodeId":4},"prometheus-writer":{"enabled":false,"extraEnv":{"JAVA_TOOL_OPTIONS":"-Xms128m -Xmx512m","PROMETHEUS_WRITER_REMOTE_WRITE_URL":"{{ include \"deltav.metricsRemoteWriteUrl\" . }}","SPRING_KAFKA_BOOTSTRAP_SERVERS":"{{ include \"deltav.kafkaBootstrap\" . }}"},"metricsRemoteWrite":true,"probePath":"/actuator/health/readiness","usesDatabase":false,"usesKafka":false},"provisiond":{"enabled":true,"extraEnv":{"RPC_KAFKA_BOOTSTRAP_SERVERS":"{{ include \"deltav.kafkaBootstrap\" . }}","RPC_KAFKA_ENABLED":"true","RPC_KAFKA_FORCE_REMOTE":"true"},"hostAliases":[{"hostnames":["mhuot-lab-2"],"ip":"172.20.20.2"},{"hostnames":["mhuot-lab-3"],"ip":"172.20.20.3"},{"hostnames":["mhuot-lab-4"],"ip":"172.20.20.4"},{"hostnames":["mhuot-lab-5"],"ip":"172.20.20.5"},{"hostnames":["mhuot-lab-6"],"ip":"172.20.20.6"}],"javaOpts":"-Xms512m -Xmx1g -XX:MaxMetaspaceSize=256m","probeInitialDelay":60,"seed":{"enabled":true,"image":"provisiond-imports-init","mountPath":"/opt/deltav/etc/imports","size":"1Gi"},"stopGracePeriodSeconds":60,"tsidNodeId":25},"syslogd":{"consumerGroup":"opennms-syslogd","enabled":true,"extraEnv":{"INTERFACE_NODE_CACHE_REFRESH_MS":"15000"},"javaOpts":"-Xms256m -Xmx512m -XX:MaxMetaspaceSize=256m","sinkConsumerGroup":"opennms-syslogd-sink","tsidNodeId":21},"telemetryd":{"consumerGroup":"opennms-telemetryd","enabled":true,"javaOpts":"-Xms256m -Xmx512m -XX:MaxMetaspaceSize=256m -Dorg.opennms.core.ipc.sink.kafka.bootstrap.servers={{ include \"deltav.kafkaBootstrap\" . }} -Dorg.opennms.core.ipc.sink.kafka.group.id=opennms-telemetryd-sink -Dorg.opennms.core.ipc.twin.kafka.bootstrap.servers={{ include \"deltav.kafkaBootstrap\" . }}","tsidNodeId":18},"trapd":{"consumerGroup":"opennms-trapd","enabled":true,"extraEnv":{"INTERFACE_NODE_CACHE_REFRESH_MS":"15000"},"javaOpts":"-Xms256m -Xmx512m -XX:MaxMetaspaceSize=256m","sinkConsumerGroup":"opennms-trapd-sink","tsidNodeId":20}}` | ------------------------------------------------------------------------- |
 | demoBackingServices | object | `{"enabled":false,"kafka":{"heapOpts":"-Xms256m -Xmx512m","image":"apache/kafka:3.9.1","resources":{}},"postgres":{"image":"postgres:16","resources":{}},"waitImage":"busybox:1.37"}` | ------------------------------------------------------------------------- |
 | envoy.enabled | bool | `true` |  |
 | envoy.image | string | `"envoy"` |  |
@@ -161,12 +203,30 @@ Kubernetes: `>=1.25.0-0`
 | envoy.service.port | int | `8443` |  |
 | envoy.service.type | string | `"ClusterIP"` |  |
 | fullnameOverride | string | `""` |  |
+| global.clickhouse.auth.existingSecret | string | `""` |  |
+| global.clickhouse.auth.password | string | `""` |  |
+| global.clickhouse.auth.username | string | `""` |  |
+| global.clickhouse.host | string | `""` |  |
+| global.clickhouse.mode | string | `""` |  |
+| global.clickhouse.tls.existingSecret | string | `""` |  |
+| global.grafana.datasourceUrl | string | `""` |  |
+| global.grafana.mode | string | `"off"` |  |
 | global.image.pullPolicy | string | `"IfNotPresent"` |  |
 | global.image.registry | string | `"ghcr.io/pbrane"` |  |
 | global.image.tag | string | `""` |  |
 | global.imagePullSecrets | list | `[]` |  |
 | global.instanceId | string | `"DeltaV"` |  |
 | global.kafka.bootstrapServers | string | `"kafka:9092"` |  |
+| global.kafka.mode | string | `"external"` |  |
+| global.kafka.security.existingSecret | string | `""` |  |
+| global.kafka.security.protocol | string | `""` |  |
+| global.kafka.security.saslMechanism | string | `""` |  |
+| global.kafka.tls.existingSecret | string | `""` |  |
+| global.kafka.tls.mutual | bool | `false` |  |
+| global.metrics.auth.existingSecret | string | `""` |  |
+| global.metrics.auth.type | string | `""` |  |
+| global.metrics.mode | string | `"off"` |  |
+| global.metrics.remoteWriteUrl | string | `"http://victoriametrics:8428/api/v1/write"` |  |
 | global.postgres.database | string | `"opennms"` |  |
 | global.postgres.existingSecret | string | `""` |  |
 | global.postgres.host | string | `"postgres"` |  |
