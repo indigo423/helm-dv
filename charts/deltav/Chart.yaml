@@ -39,7 +39,7 @@ dependencies:
     # actually routes to this subchart — Helm routes values by dependency
     # name/alias, not by the `condition:` path.
     alias: victoriametrics
-    version: 0.40.1
+    version: 0.41.0
     repository: https://victoriametrics.github.io/helm-charts/
     condition: victoriametrics.enabled
   - name: grafana
